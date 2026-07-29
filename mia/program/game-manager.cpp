@@ -1,0 +1,58 @@
+GameManager::GameManager(View* parent) : Panel(parent, Size{~0, ~0}) {
+  setCollapsible().setVisible(false);
+  pathLabel.setFont(Font().setBold()).setForegroundColor({0, 0, 240});
+  pathLabel.onMouseRelease([&](auto button) {
+    if(!path || button != Mouse::Button::Left) return;
+    if(auto location = BrowserDialog()
+    .setTitle({"Set ", system, " Games Location"})
+    .setPath(path)
+    .setAlignment(programWindow)
+    .selectFolder()
+    ) {
+      path = location;
+      auto userPath = Path::user();
+      auto pathLabelTemp = string{path}.replace(userPath, "~/");
+      pathLabel.setText(pathLabelTemp);
+      refresh();
+    }
+  });
+  importButton.setText("Import ...").onActivate([&] {
+    auto pak = mia::Medium::create(system);
+    auto extensions = pak->extensions();
+    for(auto& extension : extensions) extension.prepend("*.");
+    auto files = BrowserDialog()
+    .setTitle({"Import ", system, " Games"})
+    .setPath(settings.recent)
+    .setFilters({{system, "|", nall::merge(extensions, ":"), ":*.zip:", nall::merge(extensions, ":").upcase(), ":*.ZIP"}, "All|*"})
+    .setAlignment(programWindow)
+    .openFiles();
+    if(!files.empty()) {
+      settings.recent = Location::path(files.front());
+      gameImporter.import(system, files);
+    }
+  });
+}
+
+auto GameManager::select(string system) -> void {
+  auto userPath = Path::user();
+  path = {userPath, "Emulation/", system, "/"};
+  auto pathLabelTemp = string{path}.replace(userPath, "~/");
+  pathLabel.setText(pathLabelTemp);
+  this->system = system;
+  refresh();
+}
+
+auto GameManager::refresh() -> void {
+  gameList.reset();
+  if(!path) return;
+
+  for(auto& name : directory::folders(path)) {
+    ListViewItem item{&gameList};
+    item.setIcon(Icon::Emblem::Folder);
+    item.setText(string{name}.trimRight("/", 1L));
+  }
+
+  programWindow.show(*this);
+  Application::processEvents();
+  gameList.resizeColumn();
+}

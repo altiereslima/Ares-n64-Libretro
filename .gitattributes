@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# When archiving, export a version file containing tag/commit information
+cmake/common/.archive-version.json export-subst

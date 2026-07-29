@@ -1,0 +1,1034 @@
+#define PC pipeline.pc
+#define RA ipu.r[31]
+#define LO ipu.lo
+#define HI ipu.hi
+
+auto CPU::ADD(r64& rd, cr64& rs, cr64& rt) -> void {
+  if(~(rs.u32 ^ rt.u32) & (rs.u32 ^ rs.u32 + rt.u32) & 1 << 31) return exception.arithmeticOverflow();
+  rd.u64 = s32(rs.u32 + rt.u32);
+}
+
+auto CPU::ADDI(r64& rt, cr64& rs, s16 imm) -> void {
+  if(~(rs.u32 ^ imm) & (rs.u32 ^ rs.u32 + imm) & 1 << 31) return exception.arithmeticOverflow();
+  rt.u64 = s32(rs.s32 + imm);
+}
+
+auto CPU::ADDIU(r64& rt, cr64& rs, s16 imm) -> void {
+  rt.u64 = s32(rs.s32 + imm);
+}
+
+auto CPU::ADDU(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = s32(rs.u32 + rt.u32);
+}
+
+auto CPU::AND(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = rs.u64 & rt.u64;
+}
+
+auto CPU::ANDI(r64& rt, cr64& rs, u16 imm) -> void {
+  rt.u64 = rs.u64 & imm;
+}
+
+auto CPU::BEQ(cr64& rs, cr64& rt, s16 imm) -> void {
+  if(rs.u64 == rt.u64) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BEQL(cr64& rs, cr64& rt, s16 imm) -> void {
+  if(rs.u64 == rt.u64) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BGEZ(cr64& rs, s16 imm) -> void {
+  if(rs.s64 >= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BGEZAL(cr64& rs, s16 imm) -> void {
+  if(rs.s64 >= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+  RA.u64 = s32(PC + 4);
+}
+
+auto CPU::BGEZALL(cr64& rs, s16 imm) -> void {
+  RA.u64 = s32(PC + 4);
+  if(rs.s64 >= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BGEZL(cr64& rs, s16 imm) -> void {
+  if(rs.s64 >= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BGTZ(cr64& rs, s16 imm) -> void {
+  if(rs.s64 > 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BGTZL(cr64& rs, s16 imm) -> void {
+  if(rs.s64 > 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BLEZ(cr64& rs, s16 imm) -> void {
+  if(rs.s64 <= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BLEZL(cr64& rs, s16 imm) -> void {
+  if(rs.s64 <= 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BLTZ(cr64& rs, s16 imm) -> void {
+  if(rs.s64 < 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BLTZAL(cr64& rs, s16 imm) -> void {
+  RA.u64 = s32(PC + 4);
+  if(rs.s64 < 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BLTZALL(cr64& rs, s16 imm) -> void {
+  RA.u64 = s32(PC + 4);
+  if(rs.s64 < 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BLTZL(cr64& rs, s16 imm) -> void {
+  if(rs.s64 < 0) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BNE(cr64& rs, cr64& rt, s16 imm) -> void {
+  if(rs.u64 != rt.u64) pipeline.branch(PC + (imm << 2));
+  else pipeline.noBranch();
+}
+
+auto CPU::BNEL(cr64& rs, cr64& rt, s16 imm) -> void {
+  if(rs.u64 != rt.u64) pipeline.branch(PC + (imm << 2));
+  else pipeline.skip();
+}
+
+auto CPU::BREAK() -> void {
+  exception.breakpoint();
+}
+
+auto CPU::CACHE(u8 operation, cr64& rs, s16 imm) -> void {
+  auto access = devirtualize<Read, Word>(rs.u64 + imm);
+  if (!access) return;
+  if(!access.cache) {
+    debug(unusual, "[CPU] CACHE access to non-cacheable address ", hex(access.vaddr, 8L), " at PC ", hex(PC, 16L));
+  }
+
+  switch(operation) {
+
+  case 0x00: {  //icache index invalidate
+    auto& line = icache.line(access.vaddr);
+    line.tagKey = access.paddr & ~0xfff;
+    line.setValid(false);
+    break;
+  }
+
+  case 0x04: {  //icache load tag
+    auto& line = icache.line(access.vaddr);
+    scc.tagLo.value = 0;
+    scc.tagLo.setPrimaryCacheState(line.valid() ? 2 : 0);
+    scc.tagLo.setPhysicalAddress(line.tagKey);
+    break;
+  }
+
+  case 0x08: {  //icache store tag
+    auto& line = icache.line(access.vaddr);
+    line.tagKey = scc.tagLo.physicalAddress();
+    line.setValid(scc.tagLo.primaryCacheState().bit(1));
+    break;
+  }
+
+  case 0x10: {  //icache hit invalidate
+    auto& line = icache.line(access.vaddr);
+    if(line.hit(access.paddr)) line.setValid(false);
+    break;
+  }
+
+  case 0x14: {  //icache fill
+    auto& line = icache.line(access.vaddr);
+    line.fill(access.paddr, cpu);
+    profile.icacheMisses++;
+    break;
+  }
+
+  case 0x18: {  //icache hit write back
+    auto& line = icache.line(access.vaddr);
+    if(line.hit(access.paddr)) {
+      line.writeBack(cpu);
+      profile.icacheWritebacks++;
+    }
+    break;
+  }
+
+  case 0x01: {  //dcache index write back invalidate
+    auto& line = dcache.line(access.vaddr);
+    bool valid = line.valid();
+    if(valid && line.dirty) {
+      line.writeBack();
+      profile.dcacheWritebacks++;
+    }
+    if(valid) line.tagKey = access.paddr & ~0xfff;
+    line.setValid(false);
+    break;
+  }
+
+  case 0x05: {  //dcache index load tag
+    auto& line = dcache.line(access.vaddr);
+    scc.tagLo.value = 0;
+    scc.tagLo.setPrimaryCacheState(line.valid() ? 3 : 0);
+    scc.tagLo.setPhysicalAddress(line.tagKey);
+    break;
+  }
+
+  case 0x09: {  //dcache index store tag
+    auto& line = dcache.line(access.vaddr);
+    line.tagKey = scc.tagLo.physicalAddress();
+    line.setValid(scc.tagLo.primaryCacheState().bit(1));
+    break;
+  }
+
+  case 0x0d: {  //dcache create dirty exclusive
+    auto& line = dcache.line(access.vaddr);
+    if(!line.hit(access.paddr)) {
+      if(line.valid() && line.dirty) {
+        line.writeBack();
+        profile.dcacheWritebacks++;
+      }
+      line.dirty = 0;
+    }
+    line.tagKey = access.paddr & ~0xfff;
+    line.setValid(true);
+    break;
+  }
+
+  case 0x11: {  //dcache hit invalidate
+    auto& line = dcache.line(access.vaddr);
+    if(line.hit(access.paddr)) line.setValid(false);
+    break;
+  }
+
+  case 0x15: {  //dcache hit write back invalidate
+    auto& line = dcache.line(access.vaddr);
+    if(line.hit(access.paddr)) {
+      if(line.dirty) {
+        line.writeBack();
+        profile.dcacheWritebacks++;
+      }
+      line.setValid(false);
+    }
+    break;
+  }
+
+  case 0x19: {  //dcache hit write back
+    auto& line = dcache.line(access.vaddr);
+    if(line.hit(access.paddr)) {
+      if(line.dirty) {
+        line.writeBack();
+        line.dirty = 0;
+        profile.dcacheWritebacks++;
+      }
+    }
+    break;
+  }
+
+  }
+}
+
+auto CPU::DADD(r64& rd, cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(~(rs.u64 ^ rt.u64) & (rs.u64 ^ rs.u64 + rt.u64) & 1ull << 63) return exception.arithmeticOverflow();
+  rd.u64 = rs.u64 + rt.u64;
+}
+
+auto CPU::DADDI(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(~(rs.u64 ^ imm) & (rs.u64 ^ rs.u64 + imm) & 1ull << 63) return exception.arithmeticOverflow();
+  rt.u64 = rs.u64 + imm;
+}
+
+auto CPU::DADDIU(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rt.u64 = rs.u64 + imm;
+}
+
+auto CPU::DADDU(r64& rd, cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rs.u64 + rt.u64;
+}
+
+auto CPU::DDIV(cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(rt.s64) {
+    #if defined(_MSC_VER) || !defined(__SIZEOF_INT128__)
+    if(rs.s64 != (-1LL << 63) || rt.s64 != -1LL) {
+      LO.u64 = rs.s64 / rt.s64;
+      HI.u64 = rs.s64 % rt.s64;
+    } else {
+      LO.u64 = rs.s64;
+      HI.u64 = 0;
+    }
+    #else
+    //cast to i128 to prevent exception on INT64_MIN / -1
+    LO.u64 = s128(rs.s64) / s128(rt.s64);
+    HI.u64 = s128(rs.s64) % s128(rt.s64);
+    #endif
+  } else {
+    LO.u64 = rs.s64 < 0 ? +1 : -1;
+    HI.u64 = rs.s64;
+  }
+  step((69 - 1) * 2);
+}
+
+auto CPU::DDIVU(cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(rt.u64) {
+    LO.u64 = rs.u64 / rt.u64;
+    HI.u64 = rs.u64 % rt.u64;
+  } else {
+    LO.u64 = -1;
+    HI.u64 = rs.u64;
+  }
+  step((69 - 1) * 2);
+}
+
+auto CPU::DIV(cr64& rs, cr64& rt) -> void {
+  if(rt.s64) {
+    //using s64 to match hardware behavior when input operands are not properly sign-extended
+    //note: this does not give correct results when sgn(rt.s32) != sgn(rt.s64); on hardware this
+    //results in a meaningless quotient, it's not clear how the result is reached in that case
+    LO.u64 = s32(s64(rs.s32) / rt.s64);
+    HI.u64 = s32(s64(rs.s32) % rt.s64);
+  } else {
+    LO.u64 = rs.s32 < 0 ? +1 : -1;
+    HI.u64 = rs.s32;
+  }
+  step((37 - 1) * 2);
+}
+
+auto CPU::DIVU(cr64& rs, cr64& rt) -> void {
+  if(rt.u32) {
+    LO.u64 = s32(rs.u32 / rt.u32);
+    HI.u64 = s32(rs.u32 % rt.u32);
+  } else {
+    LO.u64 = -1;
+    HI.u64 = rs.s32;
+  }
+  step((37 - 1) * 2);
+}
+
+auto CPU::DMULT(cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+#if defined(COMPILER_MICROSOFT) && (defined(ARCHITECTURE_AMD64) || defined(ARCHITECTURE_ARM64))
+  #if defined(ARCHITECTURE_AMD64)
+  LO.s64 = _mul128(rs.s64, rt.s64, &HI.s64);
+  #else
+	LO.s64 = rs.s64 * rt.s64;
+	HI.s64 = __mulh(rs.s64, rt.s64);
+  #endif
+#else
+  #if defined(__SIZEOF_INT128__)
+  u128 result = s128(rs.s64) * s128(rt.s64);
+  #else
+  u128 result = u128(rs.u64) * u128(rt.u64);
+  if(rs.s64 < 0) result -= u128(rt.u64) << 64;
+  if(rt.s64 < 0) result -= u128(rs.u64) << 64;
+  #endif
+  LO.u64 = result >>  0;
+  HI.u64 = result >> 64;
+#endif
+  step((8 - 1) * 2);
+}
+
+auto CPU::DMULTU(cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+#if defined(COMPILER_MICROSOFT) && (defined(ARCHITECTURE_AMD64) || defined(ARCHITECTURE_ARM64))
+  #if defined(ARCHITECTURE_AMD64)
+  LO.u64 = _umul128(rs.u64, rt.u64, &HI.u64);
+  #else
+	LO.u64 = rs.u64 * rt.u64;
+	HI.u64 = __umulh(rs.u64, rt.u64);
+  #endif
+#else
+  u128 result = u128(rs.u64) * u128(rt.u64);
+  LO.u64 = result >>  0;
+  HI.u64 = result >> 64;
+#endif
+  step((8 - 1) * 2);
+}
+
+auto CPU::DSLL(r64& rd, cr64& rt, u8 sa) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.u64 << sa;
+}
+
+auto CPU::DSLLV(r64& rd, cr64& rt, cr64& rs) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.u64 << (rs.u32 & 63);
+}
+
+auto CPU::DSRA(r64& rd, cr64& rt, u8 sa) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.s64 >> sa;
+}
+
+auto CPU::DSRAV(r64& rd, cr64& rt, cr64& rs) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.s64 >> (rs.u32 & 63);
+}
+
+auto CPU::DSRL(r64& rd, cr64& rt, u8 sa) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.u64 >> sa;
+}
+
+auto CPU::DSRLV(r64& rd, cr64& rt, cr64& rs) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rt.u64 >> (rs.u32 & 63);
+}
+
+auto CPU::DSUB(r64& rd, cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if((rs.u64 ^ rt.u64) & (rs.u64 ^ rs.u64 - rt.u64) & 1ull << 63) return exception.arithmeticOverflow();
+  rd.u64 = rs.u64 - rt.u64;
+}
+
+auto CPU::DSUBU(r64& rd, cr64& rs, cr64& rt) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  rd.u64 = rs.u64 - rt.u64;
+}
+
+auto CPU::J(u32 imm) -> void {
+  pipeline.branch((PC & 0xffff'ffff'f000'0000) | (imm << 2));
+}
+
+auto CPU::JAL(u32 imm) -> void {
+  RA.u64 = PC+4;
+  pipeline.branch((PC & 0xffff'ffff'f000'0000) | (imm << 2));
+}
+
+auto CPU::JALR(r64& rd, cr64& rs) -> void {
+  u64 tgt = rs.u64;
+  rd.u64 = PC+4;
+  pipeline.branch(tgt);
+}
+
+auto CPU::JR(cr64& rs) -> void {
+  pipeline.branch(rs.u64);
+}
+
+auto CPU::LB(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Byte>(rs.u64 + imm)) rt.u64 = s8(*data);
+}
+
+auto CPU::LBU(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Byte>(rs.u64 + imm)) rt.u64 = u8(*data);
+}
+
+auto CPU::LD(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(auto data = read<Dual>(rs.u64 + imm)) rt.u64 = *data;
+}
+
+auto CPU::LDL(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  u64 vaddr = rs.u64 + imm;
+  u64 data = rt.u64;
+
+  if(context.littleEndian()) {
+    auto mem = read<Dual>(vaddr & ~7);
+    if(!mem) return;
+    switch(vaddr & 7) {
+    case 0: data = (data & 0x00ffffffffffffffull) | (*mem << 56); break;
+    case 1: data = (data & 0x0000ffffffffffffull) | (*mem << 48); break;
+    case 2: data = (data & 0x000000ffffffffffull) | (*mem << 40); break;
+    case 3: data = (data & 0x00000000ffffffffull) | (*mem << 32); break;
+    case 4: data = (data & 0x0000000000ffffffull) | (*mem << 24); break;
+    case 5: data = (data & 0x000000000000ffffull) | (*mem << 16); break;
+    case 6: data = (data & 0x00000000000000ffull) | (*mem <<  8); break;
+    case 7: data = (data & 0x0000000000000000ull) | (*mem <<  0); break;
+    }
+  }
+
+  if(context.bigEndian()) {
+    auto mem = read<Dual>(vaddr & ~7);
+    if(!mem) return;
+    switch(vaddr & 7) {
+    case 0: data = (data & 0x0000000000000000ull) | (*mem <<  0); break;
+    case 1: data = (data & 0x00000000000000ffull) | (*mem <<  8); break;
+    case 2: data = (data & 0x000000000000ffffull) | (*mem << 16); break;
+    case 3: data = (data & 0x0000000000ffffffull) | (*mem << 24); break;
+    case 4: data = (data & 0x00000000ffffffffull) | (*mem << 32); break;
+    case 5: data = (data & 0x000000ffffffffffull) | (*mem << 40); break;
+    case 6: data = (data & 0x0000ffffffffffffull) | (*mem << 48); break;
+    case 7: data = (data & 0x00ffffffffffffffull) | (*mem << 56); break;
+    }
+  }
+
+  rt.u64 = data;
+}
+
+auto CPU::LDR(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  u64 vaddr = rs.u64 + imm;
+  u64 data = rt.u64;
+
+  if(context.littleEndian()) {
+    auto mem = read<Dual>(vaddr & ~7);
+    if(!mem) return;
+    switch(vaddr & 7) {
+    case 0: data = (data & 0x0000000000000000ull) | (*mem >>  0); break;
+    case 1: data = (data & 0xff00000000000000ull) | (*mem >>  8); break;
+    case 2: data = (data & 0xffff000000000000ull) | (*mem >> 16); break;
+    case 3: data = (data & 0xffffff0000000000ull) | (*mem >> 24); break;
+    case 4: data = (data & 0xffffffff00000000ull) | (*mem >> 32); break;
+    case 5: data = (data & 0xffffffffff000000ull) | (*mem >> 40); break;
+    case 6: data = (data & 0xffffffffffff0000ull) | (*mem >> 48); break;
+    case 7: data = (data & 0xffffffffffffff00ull) | (*mem >> 56); break;
+    }
+  }
+
+  if(context.bigEndian()) {
+    auto mem = read<Dual>(vaddr & ~7);
+    if(!mem) return;
+    switch(vaddr & 7) {
+    case 0: data = (data & 0xffffffffffffff00ull) | (*mem >> 56); break;
+    case 1: data = (data & 0xffffffffffff0000ull) | (*mem >> 48); break;
+    case 2: data = (data & 0xffffffffff000000ull) | (*mem >> 40); break;
+    case 3: data = (data & 0xffffffff00000000ull) | (*mem >> 32); break;
+    case 4: data = (data & 0xffffff0000000000ull) | (*mem >> 24); break;
+    case 5: data = (data & 0xffff000000000000ull) | (*mem >> 16); break;
+    case 6: data = (data & 0xff00000000000000ull) | (*mem >>  8); break;
+    case 7: data = (data & 0x0000000000000000ull) | (*mem >>  0); break;
+    }
+  }
+
+  rt.u64 = data;
+}
+
+auto CPU::LH(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Half>(rs.u64 + imm)) rt.u64 = s16(*data);
+}
+
+auto CPU::LHU(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Half>(rs.u64 + imm)) rt.u64 = u16(*data);
+}
+
+auto CPU::LL(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto access = devirtualize<Read, Word>(rs.u64 + imm)) {
+    if (auto data = read<Word>(access.vaddr)) {
+      rt.u64 = s32(*data);
+      scc.ll = access.paddr >> 4;
+      scc.llbit = 1;
+    }
+  }
+}
+
+auto CPU::LLD(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(auto access = devirtualize<Read, Word>(rs.u64 + imm)) {
+    if (auto data = read<Dual>(access.vaddr)) {
+      rt.u64 = *data;
+      scc.ll = access.paddr >> 4;
+      scc.llbit = 1;
+    }
+  }
+}
+
+auto CPU::LUI(r64& rt, u16 imm) -> void {
+  rt.u64 = s32(imm << 16);
+}
+
+auto CPU::LW(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Word>(rs.u64 + imm)) rt.u64 = s32(*data);
+}
+
+auto CPU::LWL(r64& rt, cr64& rs, s16 imm) -> void {
+  u64 vaddr = rs.u64 + imm;
+  u32 data = rt.u32;
+  auto mem = read<Word>(vaddr & ~3);
+  if(!mem) return;
+  u32 word = *mem;
+
+  if(context.littleEndian()) {
+    switch(vaddr & 3) {
+    case 0: data = (data & 0x00ffffff) | (word << 24); break;
+    case 1: data = (data & 0x0000ffff) | (word << 16); break;
+    case 2: data = (data & 0x000000ff) | (word <<  8); break;
+    case 3: data = (data & 0x00000000) | (word <<  0); break;
+    }
+  }
+  
+  if(context.bigEndian()) {
+    switch(vaddr & 3) {
+    case 0: data = (data & 0x00000000) | (word <<  0); break;
+    case 1: data = (data & 0x000000ff) | (word <<  8); break;
+    case 2: data = (data & 0x0000ffff) | (word << 16); break;
+    case 3: data = (data & 0x00ffffff) | (word << 24); break;
+    }
+  }
+
+  rt.s64 = (s32)data;
+}
+
+auto CPU::LWR(r64& rt, cr64& rs, s16 imm) -> void {
+  u64 vaddr = rs.u64 + imm;
+  u64 upper = rt.u64 & 0xffffffff00000000ull;
+  u32 data = rt.u32;
+  auto mem = read<Word>(vaddr & ~3);
+  if(!mem) return;
+  u32 word = *mem;
+  bool signExtended;
+
+  if(context.littleEndian()) {
+    switch(vaddr & 3) {
+    case 0: data = (data & 0x00000000) | (word >>  0); signExtended = true;  break;
+    case 1: data = (data & 0xff000000) | (word >>  8); signExtended = false; break;
+    case 2: data = (data & 0xffff0000) | (word >> 16); signExtended = false; break;
+    case 3: data = (data & 0xffffff00) | (word >> 24); signExtended = false; break;
+    }
+  }
+
+  if(context.bigEndian()) {
+    switch(vaddr & 3) {
+    case 0: data = (data & 0xffffff00) | (word >> 24); signExtended = false; break;
+    case 1: data = (data & 0xffff0000) | (word >> 16); signExtended = false; break;
+    case 2: data = (data & 0xff000000) | (word >>  8); signExtended = false; break;
+    case 3: data = (data & 0x00000000) | (word >>  0); signExtended = true;  break;
+    }
+  }
+
+  if(signExtended) rt.s64 = (s32)data;
+  else             rt.u64 = upper | data;
+}
+
+auto CPU::LWU(r64& rt, cr64& rs, s16 imm) -> void {
+  if(auto data = read<Word>(rs.u64 + imm)) rt.u64 = u32(*data);
+}
+
+auto CPU::MFHI(r64& rd) -> void {
+  rd.u64 = HI.u64;
+}
+
+auto CPU::MFLO(r64& rd) -> void {
+  rd.u64 = LO.u64;
+}
+
+auto CPU::MTHI(cr64& rs) -> void {
+  HI.u64 = rs.u64;
+}
+
+auto CPU::MTLO(cr64& rs) -> void {
+  LO.u64 = rs.u64;
+}
+
+auto CPU::MULT(cr64& rs, cr64& rt) -> void {
+  //using s64 to match hardware behavior when input operands are not properly sign-extended,
+  //the hardware behavior appears to be a signed 64-bit by 35-bit multiplication
+  u64 result = rs.s64 * (rt.s64 << 29 >> 29);
+  LO.u64 = s32(result >>  0);
+  HI.u64 = s32(result >> 32);
+  step((5 - 1) * 2);
+}
+
+auto CPU::MULTU(cr64& rs, cr64& rt) -> void {
+  u64 result = u64(rs.u32) * u64(rt.u32);
+  LO.u64 = s32(result >>  0);
+  HI.u64 = s32(result >> 32);
+  step((5 - 1) * 2);
+}
+
+auto CPU::NOR(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = ~(rs.u64 | rt.u64);
+}
+
+auto CPU::OR(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = rs.u64 | rt.u64;
+}
+
+auto CPU::ORI(r64& rt, cr64& rs, u16 imm) -> void {
+  rt.u64 = rs.u64 | imm;
+}
+
+auto CPU::SB(cr64& rt, cr64& rs, s16 imm) -> void {
+  write<Byte>(rs.u64 + imm, rt.u32);
+}
+
+auto CPU::SC(r64& rt, cr64& rs, s16 imm) -> void {
+  if(scc.llbit) {
+    rt.u64 = write<Word>(rs.u64 + imm, rt.u32);
+  } else {
+    rt.u64 = 0;
+  }
+}
+
+auto CPU::SCD(r64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  if(scc.llbit) {
+    rt.u64 = write<Dual>(rs.u64 + imm, rt.u64);
+  } else {
+    rt.u64 = 0;
+  }
+}
+
+auto CPU::SD(cr64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  write<Dual>(rs.u64 + imm, rt.u64);
+}
+
+auto CPU::SDL(cr64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  u64 vaddr = rs.u64 + imm;
+  u64 data = rt.u64;
+
+  if(context.littleEndian())
+  switch(vaddr & 7) {
+  case 0:
+    if(!write<Byte>(vaddr & ~7 | 0, data >> 56)) return;
+    break;
+  case 1:
+    if(!write<Half>(vaddr & ~7 | 0, data >> 48)) return;
+    break;
+  case 2:
+    if(!write<Byte>(vaddr & ~7 | 2, data >> 56)) return;
+    if(!write<Half>(vaddr & ~7 | 0, data >> 40)) return;
+    break;
+  case 3:
+    if(!write<Word>(vaddr & ~7 | 0, data >> 32)) return;
+    break;
+  case 4:
+    if(!write<Byte>(vaddr & ~7 | 4, data >> 56)) return;
+    if(!write<Word>(vaddr & ~7 | 0, data >> 24)) return;
+    break;
+  case 5:
+    if(!write<Half>(vaddr & ~7 | 4, data >> 48)) return;
+    if(!write<Word>(vaddr & ~7 | 0, data >> 16)) return;
+    break;
+  case 6:
+    if(!write<Byte>(vaddr & ~7 | 6, data >> 56)) return;
+    if(!write<Half>(vaddr & ~7 | 4, data >> 40)) return;
+    if(!write<Word>(vaddr & ~7 | 0, data >>  8)) return;
+    break;
+  case 7:
+    if(!write<Dual>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  }
+  
+  if(context.bigEndian())
+  switch(vaddr & 7) {
+  case 0:
+    if(!write<Dual>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  case 1:
+    if(!write<Byte>(vaddr & ~7 | 1, data >> 56)) return;
+    if(!write<Half>(vaddr & ~7 | 2, data >> 40)) return;
+    if(!write<Word>(vaddr & ~7 | 4, data >>  8)) return;
+    break;
+  case 2:
+    if(!write<Half>(vaddr & ~7 | 2, data >> 48)) return;
+    if(!write<Word>(vaddr & ~7 | 4, data >> 16)) return;
+    break;
+  case 3:
+    if(!write<Byte>(vaddr & ~7 | 3, data >> 56)) return;
+    if(!write<Word>(vaddr & ~7 | 4, data >> 24)) return;
+    break;
+  case 4:
+    if(!write<Word>(vaddr & ~7 | 4, data >> 32)) return;
+    break;
+  case 5:
+    if(!write<Byte>(vaddr & ~7 | 5, data >> 56)) return;
+    if(!write<Half>(vaddr & ~7 | 6, data >> 40)) return;
+    break;
+  case 6:
+    if(!write<Half>(vaddr & ~7 | 6, data >> 48)) return;
+    break;
+  case 7:
+    if(!write<Byte>(vaddr & ~7 | 7, data >> 56)) return;
+    break;
+  }
+}
+
+auto CPU::SDR(cr64& rt, cr64& rs, s16 imm) -> void {
+  if(!context.kernelMode() && context.bits == 32) return exception.reservedInstruction();
+  u64 vaddr = rs.u64 + imm;
+  u64 data = rt.u64;
+
+  if(context.littleEndian())
+  switch(vaddr & 7) {
+  case 0:
+    if(!write<Dual>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  case 1:
+    if(!write<Word>(vaddr & ~7 | 4, data >> 24)) return;
+    if(!write<Half>(vaddr & ~7 | 2, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 1, data >>  0)) return;
+    break;
+  case 2:
+    if(!write<Word>(vaddr & ~7 | 4, data >> 16)) return;
+    if(!write<Half>(vaddr & ~7 | 2, data >>  0)) return;
+    break;
+  case 3:
+    if(!write<Word>(vaddr & ~7 | 4, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 3, data >>  0)) return;
+    break;
+  case 4:
+    if(!write<Word>(vaddr & ~7 | 4, data >>  0)) return;
+    break;
+  case 5:
+    if(!write<Half>(vaddr & ~7 | 6, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 5, data >>  0)) return;
+    break;
+  case 6:
+    if(!write<Half>(vaddr & ~7 | 6, data >>  0)) return;
+    break;
+  case 7:
+    if(!write<Byte>(vaddr & ~7 | 7, data >>  0)) return;
+    break;
+  }
+
+  if(context.bigEndian())
+  switch(vaddr & 7) {
+  case 0:
+    if(!write<Byte>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  case 1:
+    if(!write<Half>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  case 2:
+    if(!write<Half>(vaddr & ~7 | 0, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 2, data >>  0)) return;
+    break;
+  case 3:
+    if(!write<Word>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  case 4:
+    if(!write<Word>(vaddr & ~7 | 0, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 4, data >>  0)) return;
+    break;
+  case 5:
+    if(!write<Word>(vaddr & ~7 | 0, data >> 16)) return;
+    if(!write<Half>(vaddr & ~7 | 4, data >>  0)) return;
+    break;
+  case 6:
+    if(!write<Word>(vaddr & ~7 | 0, data >> 24)) return;
+    if(!write<Half>(vaddr & ~7 | 4, data >>  8)) return;
+    if(!write<Byte>(vaddr & ~7 | 6, data >>  0)) return;
+    break;
+  case 7:
+    if(!write<Dual>(vaddr & ~7 | 0, data >>  0)) return;
+    break;
+  }
+}
+
+auto CPU::SH(cr64& rt, cr64& rs, s16 imm) -> void {
+  write<Half>(rs.u64 + imm, rt.u32);
+}
+
+auto CPU::SLL(r64& rd, cr64& rt, u8 sa) -> void {
+  rd.u64 = s32(rt.u32 << sa);
+}
+
+auto CPU::SLLV(r64& rd, cr64& rt, cr64& rs) -> void {
+  rd.u64 = s32(rt.u32 << (rs.u32 & 31));
+}
+
+auto CPU::SLT(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = rs.s64 < rt.s64;
+}
+
+auto CPU::SLTI(r64& rt, cr64& rs, s16 imm) -> void {
+  rt.u64 = rs.s64 < imm;
+}
+
+auto CPU::SLTIU(r64& rt, cr64& rs, s16 imm) -> void {
+  rt.u64 = rs.u64 < imm;
+}
+
+auto CPU::SLTU(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = rs.u64 < rt.u64;
+}
+
+auto CPU::SRA(r64& rd, cr64& rt, u8 sa) -> void {
+  rd.u64 = s32(rt.s64 >> sa);
+}
+
+auto CPU::SRAV(r64& rd, cr64& rt, cr64& rs) -> void {
+  rd.u64 = s32(rt.s64 >> (rs.u32 & 31));
+}
+
+auto CPU::SRL(r64& rd, cr64& rt, u8 sa) -> void {
+  rd.u64 = s32(rt.u32 >> sa);
+}
+
+auto CPU::SRLV(r64& rd, cr64& rt, cr64& rs) -> void {
+  rd.u64 = s32(rt.u32 >> (rs.u32 & 31));
+}
+
+auto CPU::SUB(r64& rd, cr64& rs, cr64& rt) -> void {
+  if((rs.u32 ^ rt.u32) & (rs.u32 ^ rs.u32 - rt.u32) & 1 << 31) return exception.arithmeticOverflow();
+  rd.u64 = s32(rs.u32 - rt.u32);
+}
+
+auto CPU::SUBU(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = s32(rs.u32 - rt.u32);
+}
+
+auto CPU::SW(cr64& rt, cr64& rs, s16 imm) -> void {
+  write<Word>(rs.u64 + imm, rt.u32);
+}
+
+auto CPU::SWL(cr64& rt, cr64& rs, s16 imm) -> void {
+  u64 vaddr = rs.u64 + imm;
+  u32 data = rt.u32;
+
+  if(context.littleEndian()) {
+    switch(vaddr & 3) {
+    case 0:
+      if(!write<Byte>(vaddr & ~3 | 0, data >> 24)) return;
+      break;
+    case 1:
+      if(!write<Half>(vaddr & ~3 | 0, data >> 16)) return;
+      break;
+    case 2:
+      if(!write<Byte>(vaddr & ~3 | 2, data >> 24)) return;
+      if(!write<Half>(vaddr & ~3 | 0, data >>  8)) return;
+      break;
+    case 3:
+      if(!write<Word>(vaddr & ~3 | 0, data >>  0)) return;
+      break;
+    }
+  } else {
+  switch(vaddr & 3) {
+  case 0:
+    if(!write<Word>(vaddr + 0, data >>  0)) return;
+    break;
+  case 1:
+    if(!write<Byte>(vaddr + 0, data >> 24)) return;
+    if(!write<Half>(vaddr + 1, data >>  8)) return;
+    break;
+  case 2:
+    if(!write<Half>(vaddr + 0, data >> 16)) return;
+    break;
+  case 3:
+    if(!write<Byte>(vaddr + 0, data >> 24)) return;
+    break;
+  }
+  }
+}
+
+auto CPU::SWR(cr64& rt, cr64& rs, s16 imm) -> void {
+  u64 vaddr = rs.u64 + imm;
+  u32 data = rt.u32;
+
+  if(context.littleEndian()) {
+    switch(vaddr & 3) {
+    case 0:
+      if(!write<Word>(vaddr & ~3 | 0, data >>  0)) return;
+      break;
+    case 1:
+      if(!write<Half>(vaddr & ~3 | 2, data >>  8)) return;
+      if(!write<Byte>(vaddr & ~3 | 1, data >>  0)) return;
+      break;
+    case 2:
+      if(!write<Half>(vaddr & ~3 | 2, data >>  0)) return;
+      break;
+    case 3:
+      if(!write<Byte>(vaddr & ~3 | 3, data >>  0)) return;
+      break;
+    }
+  } else {
+  switch(vaddr & 3) {
+  case 0:
+    if(!write<Byte>(vaddr + 0, data >>  0, false)) return;
+    break;
+  case 1:
+    if(!write<Half>(vaddr + 0, data >>  0, false)) return;
+    break;
+  case 2:
+    if(!write<Byte>(vaddr + 0, data >>  0, false)) return;
+    if(!write<Half>(vaddr - 2, data >>  8, false)) return;
+    break;
+  case 3:
+    if(!write<Word>(vaddr + 0, data >>  0, false)) return;
+    break;
+  }
+  }
+}
+
+auto CPU::SYNC() -> void {
+  //no operation; for compatibility with R4000-series code
+}
+
+auto CPU::SYSCALL() -> void {
+  exception.systemCall();
+}
+
+auto CPU::TEQ(cr64& rs, cr64& rt) -> void {
+  if(rs.u64 == rt.u64) exception.trap();
+}
+
+auto CPU::TEQI(cr64& rs, s16 imm) -> void {
+  if(rs.s64 == imm) exception.trap();
+}
+
+auto CPU::TGE(cr64& rs, cr64& rt) -> void {
+  if(rs.s64 >= rt.s64) exception.trap();
+}
+
+auto CPU::TGEI(cr64& rs, s16 imm) -> void {
+  if(rs.s64 >= imm) exception.trap();
+}
+
+auto CPU::TGEIU(cr64& rs, s16 imm) -> void {
+  if(rs.u64 >= imm) exception.trap();
+}
+
+auto CPU::TGEU(cr64& rs, cr64& rt) -> void {
+  if(rs.u64 >= rt.u64) exception.trap();
+}
+
+auto CPU::TLT(cr64& rs, cr64& rt) -> void {
+  if(rs.s64 < rt.s64) exception.trap();
+}
+
+auto CPU::TLTI(cr64& rs, s16 imm) -> void {
+  if(rs.s64 < imm) exception.trap();
+}
+
+auto CPU::TLTIU(cr64& rs, s16 imm) -> void {
+  if(rs.u64 < imm) exception.trap();
+}
+
+auto CPU::TLTU(cr64& rs, cr64& rt) -> void {
+  if(rs.u64 < rt.u64) exception.trap();
+}
+
+auto CPU::TNE(cr64& rs, cr64& rt) -> void {
+  if(rs.u64 != rt.u64) exception.trap();
+}
+
+auto CPU::TNEI(cr64& rs, s16 imm) -> void {
+  if(rs.s64 != imm) exception.trap();
+}
+
+auto CPU::XOR(r64& rd, cr64& rs, cr64& rt) -> void {
+  rd.u64 = rs.u64 ^ rt.u64;
+}
+
+auto CPU::XORI(r64& rt, cr64& rs, u16 imm) -> void {
+  rt.u64 = rs.u64 ^ imm;
+}
+
+#undef PC
+#undef RA
+#undef LO
+#undef HI

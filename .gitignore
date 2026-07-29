@@ -1,0 +1,74 @@
+# Exclude everything
+/*
+
+# Except for default project files
+!/.github
+!/ares
+!/desktop-ui
+!/hiro
+!/cmake
+!/libco
+!/libretro
+!/mia
+!/nall
+!/ruby
+!/scripts
+!/tests
+!/thirdparty
+!/tools
+!/GNUMakefile
+!/LICENSE
+!/README.md
+!.editorconfig
+!.gitignore
+!.gitattributes
+!.gersemirc
+!deps.json
+!CMakeLists.txt
+!CMakePresets.json
+
+# Exclude old macOS Finder metadata
+.DS_Store
+
+# Exclude generated sources that still reside in-tree
+ruby/video/metal/shaders.metallib
+ruby/video/metal/shaders.ir
+ares/ares/resource/resource.cpp
+ares/ares/resource/resource.hpp
+hiro/resource/resource.cpp
+hiro/resource/resource.hpp
+desktop-ui/resource/resource.cpp
+desktop-ui/resource/resource.hpp
+mia/resource/resource.cpp
+mia/resource/resource.hpp
+
+# Exclude Qt generated MOC file
+hiro/qt/qt.moc
+
+# Exclude fetched third-party processor test binaries
+tests/arm7tdmi/tests
+tests/m68000/tests
+
+# Exclude unused legacy zlib header that is renamed by CMake
+thirdparty/libchdr/deps/zlib-*/zconf.h
+thirdparty/libchdr/deps/zlib-*/zconf.h.included
+
+# Exclude local builds and emulator runtime data
+**/CMakeCache.txt
+**/CMakeFiles/
+**/_deps/
+**/*.dll
+**/*.dylib
+**/*.exe
+**/*.exp
+**/*.lib
+**/*.log
+**/*.n64
+**/*.pdb
+**/*.sav
+**/*.so
+**/*.srm
+**/*.state
+**/*.state[0-9]*
+**/*.v64
+**/*.z64

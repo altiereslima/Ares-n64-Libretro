@@ -1,0 +1,97 @@
+name: Build Nintendo 64 libretro core
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+    - .github/workflows/build-libretro-n64.yml
+    - CMakeLists.txt
+    - ares/**
+    - cmake/**
+    - libco/**
+    - libretro/**
+    - mia/**
+    - nall/**
+    - thirdparty/**
+    - tools/sourcery/**
+  pull_request:
+    paths:
+    - .github/workflows/build-libretro-n64.yml
+    - CMakeLists.txt
+    - ares/**
+    - cmake/**
+    - libco/**
+    - libretro/**
+    - mia/**
+    - nall/**
+    - thirdparty/**
+    - tools/sourcery/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: libretro-n64-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 (Release + LTO)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_MAXSIZE: 2G
+
+    steps:
+    - name: Install MSYS2 toolchain
+      uses: msys2/setup-msys2@40677d36a502eb2cf0fb808cc9dec31bf6152638
+      with:
+        msystem: clang64
+        install: git cmake ccache ninja mingw-w64-clang-x86_64-clang
+
+    - name: Check out source
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Restore compiler cache
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+      with:
+        path: .ccache
+        key: libretro-n64-clang64-${{ github.sha }}
+        restore-keys: |
+          libretro-n64-clang64-
+
+    - name: Configure
+      run: |
+        cmake -S . -B build/libretro-n64 -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DARES_BUILD_LIBRETRO_N64=ON \
+          -DARES_BUILD_LOCAL=OFF \
+          -DARES_CORES=n64 \
+          -DARES_ENABLE_CHD=OFF \
+          -DARES_UNITY_CORES=ON \
+          -DENABLE_IPO=ON
+
+    - name: Build
+      run: cmake --build build/libretro-n64 --target ares-n64-libretro --parallel
+
+    - name: Show compiler cache statistics
+      run: ccache --show-stats
+
+    - name: Upload optimized core
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: ares-n64-libretro-windows-x64
+        path: build/libretro-n64/libretro/ares_n64_libretro.dll
+        if-no-files-found: error
+        retention-days: 30

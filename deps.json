@@ -1,0 +1,27 @@
+{
+    "dependencies": {
+        "prebuilt": {
+            "version": "2026-05-30",
+            "baseUrl": "https://github.com/ares-emulator/ares-deps/releases/download",
+            "label": "ares-deps libraries",
+            "hashes": {
+                "linux-universal": "96e3d44da459b8e895dc3a04c8ec33b2eac5fcb4084d05e35da0ced0d4081926",
+                "macos-universal": "629111f128dbeee65565af1032b30963e31568625a4892cc33cd9248f952ac94",
+                "windows-arm64": "d0fe2ca31802d9d8399f65953dc958b23d801130425fdfbb15599265d962f20c",
+                "windows-x64": "e14e3d44909194cf7aa0a9dbf9693b5f74b34162b15d69c34ed05d709808c6a8"
+            }
+        },
+        "source": {
+            "version": "2026-05-30",
+            "baseUrl": "https://github.com/ares-emulator/ares-deps/releases/download",
+            "label": "ares-deps source code",
+            "hashes": {
+                "linux-universal": "49b47842be08d2d3aab885cc5d27137b0939493f1082a7c8cf90dbf77ff88fa1",
+                "macos-universal": "4195d5434409f5982839afd1b469091960ab54b3ac459f7a7b760ed3dcb5c725",
+                "windows-arm64": "16ccb10d126f8641aa8a2354c9b632aa73937e6970a0ab22c60c0b9733aebe0b",
+                "windows-x64": "8082df53fd6f062829cb0038cfb6773df30094fa591e286b2c00aab344a9b480"
+            }
+        }
+    },
+    "name": "ares"
+}
