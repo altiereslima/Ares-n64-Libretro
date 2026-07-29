@@ -23,11 +23,9 @@
 #undef dllexport
 #endif
 
-#if defined(_MSC_VER)
 namespace nall {
 auto main(Arguments) -> void {}
 }
-#endif
 
 namespace ares::Nintendo64 {
 auto load(Node::System& node, nall::string name) -> bool;

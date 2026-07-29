@@ -25,6 +25,6 @@ cmake --build build/libretro-n64 --target ares-n64-libretro
 The resulting core is named `ares_n64_libretro.dll` on Windows,
 `ares_n64_libretro.so` on Linux, and `ares_n64_libretro.dylib` on macOS.
 
-The `Build Nintendo 64 libretro core` GitHub Actions workflow produces a
-portable Windows x64 Release build with LTO and publishes the DLL as a workflow
-artifact.
+The `Build Nintendo 64 libretro core` GitHub Actions workflow produces portable
+Windows and Linux x64 Release builds with LTO and publishes the DLL and shared
+object as workflow artifacts.
