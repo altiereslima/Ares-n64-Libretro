@@ -39,6 +39,18 @@ endforeach()
 
 add_library(ares-n64-libretro SHARED libretro.cpp)
 
+if(NOT WIN32)
+  set_target_properties(
+    ares
+    libco
+    mia
+    nall
+    sljit
+    tzxfile
+    PROPERTIES POSITION_INDEPENDENT_CODE ON
+  )
+endif()
+
 target_compile_definitions(ares-n64-libretro PRIVATE MIA_LIBRARY)
 target_include_directories(
   ares-n64-libretro
