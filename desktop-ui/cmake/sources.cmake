@@ -5,7 +5,7 @@ target_sources(
 
 target_sources(desktop-ui PRIVATE game-browser/game-browser.hpp)
 
-target_sources(desktop-ui PRIVATE input/hotkeys.cpp input/input.hpp)
+target_sources(desktop-ui PRIVATE input/hotkeys.cpp input/input.hpp input/game-input.hpp)
 
 target_sources(desktop-ui PRIVATE presentation/presentation.hpp)
 
@@ -60,6 +60,7 @@ target_sources(
   PRIVATE
     emulator/arcade.cpp
     emulator/atari-2600.cpp
+    emulator/atari-5200.cpp
     emulator/colecovision.cpp
     emulator/emulator.cpp
     emulator/emulator.hpp
@@ -80,7 +81,6 @@ target_sources(
     emulator/msx2.cpp
     emulator/myvision.cpp
     emulator/neo-geo-aes.cpp
-    emulator/neo-geo-mvs.cpp
     emulator/neo-geo-pocket-color.cpp
     emulator/neo-geo-pocket.cpp
     emulator/nintendo-64.cpp

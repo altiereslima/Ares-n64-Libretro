@@ -8,6 +8,7 @@ auto enumerate() -> std::vector<string> {
     "[Sony] PlayStation (NTSC-J)",
     "[Sony] PlayStation (NTSC-U)",
     "[Sony] PlayStation (PAL)",
+    "[Konami] GV",
   };
 }
 
@@ -19,6 +20,7 @@ auto load(Node::System& node, string name) -> bool {
 
 auto option(string name, string value) -> bool {
   if(name == "Homebrew Mode") system.homebrewMode = value.boolean();
+  if(name == "Pixel Accuracy") gpu.pixelAccuracy = value.boolean();
   return true;
 }
 
@@ -46,6 +48,13 @@ auto System::load(Node::System& root, string name) -> bool {
   if(name.find("PlayStation")) {
     information.name = "PlayStation";
   }
+  if(name.find("Konami")) {
+    information.name = "Konami GV";
+    information.arcade = true;
+    information.konamiGV = true;
+    information.region = Region::NTSCJ;
+    information.gpuFrequency = 53'693'175;
+  }
   if(name.find("NTSC-J")) {
     information.region = Region::NTSCJ;
     information.gpuFrequency = 53'693'175;
@@ -56,7 +65,7 @@ auto System::load(Node::System& root, string name) -> bool {
   }
   if(name.find("PAL")) {
     information.region = Region::PAL;
-    information.gpuFrequency = 53'693'175;
+    information.gpuFrequency = 53'222'400;
   }
 
   node = std::make_shared<Core::System>(information.name);
@@ -79,10 +88,12 @@ auto System::load(Node::System& root, string name) -> bool {
   spu.load(node);
   mdec.load(node);
   disc.load(node);
-  controllerPort1.load(node);
-  memoryCardPort1.load(node);
-  controllerPort2.load(node);
-  memoryCardPort2.load(node);
+  if(!arcade()) {
+    controllerPort1.load(node);
+    memoryCardPort1.load(node);
+    controllerPort2.load(node);
+    memoryCardPort2.load(node);
+  }
   interrupt.load(node);
   peripheral.load(node);
   dma.load(node);
@@ -93,6 +104,8 @@ auto System::load(Node::System& root, string name) -> bool {
     bios.load(fp);
   }
 
+  expansion.load(node);
+  if(information.konamiGV) expansion.device = std::make_unique<KonamiGV>(node);
   return true;
 }
 
@@ -100,6 +113,7 @@ auto System::unload() -> void {
   if(!node) return;
   save();
   if(gpu.screen) gpu.screen->quit(); //stop video thread
+  expansion.unload();
   memory.unload();
   cpu.unload();
   gpu.unload();
@@ -121,6 +135,7 @@ auto System::unload() -> void {
 
 auto System::save() -> void {
   if(!node) return;
+  expansion.save();
   memoryCardPort1.save();
   memoryCardPort2.save();
 }
@@ -133,6 +148,7 @@ auto System::power(bool reset) -> void {
     random.seed(Random::Default);
   }
 
+  expansion.power(reset);
   memory.power(reset);
   cpu.power(reset);
   gpu.power(reset);
@@ -143,14 +159,6 @@ auto System::power(bool reset) -> void {
   peripheral.power(reset);
   dma.power(reset);
   timer.power(reset);
-
-  cpu.exe.reset();
-  if(disc.executable()) {
-    if(auto fp = disc.pak->read("program.exe")) {
-      cpu.exe.allocate(fp->size());
-      cpu.exe.load(fp);
-    }
-  }
 
   scheduler.power(cpu);
 }

@@ -59,7 +59,13 @@ namespace ares {
   }
 
   namespace Video {
+    #if defined(ARES_VIDEO_UNTHREADED)
+    //libretro frontends consume the frame at the end of retro_run(), so refresh
+    //synchronously instead of racing a separate screen thread.
+    static constexpr bool Threaded = false;
+    #else
     static constexpr bool Threaded = true;
+    #endif
   }
 
   namespace Constants {

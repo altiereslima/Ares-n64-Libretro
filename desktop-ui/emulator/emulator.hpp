@@ -3,25 +3,40 @@ struct Emulator {
   static auto construct() -> void;
 
   struct Firmware;
+  struct GameBrowserCategory {
+    string name;
+    string board;
+    string release;
+  };
+
   virtual ~Emulator() = default;
 
   //emulator.cpp
   static auto enumeratePorts(string name) -> std::vector<InputPort>&;
+  auto configuredPeripheral(const string& portName) -> string*;
+  auto setPeripheralConfiguration(const string& portName, const string& peripheral) -> bool;
+  auto applyPeripheralConfiguration() -> void;
   auto location() -> string;
   auto locate(const string& location, const string& suffix, const string& path = "", maybe<string> system = {}) -> string;
+  auto locateArcadeBios(string location, string board, string filename) -> string;
   auto region() -> string;
   auto load(const string& location) -> bool;
   auto load(std::shared_ptr<mia::Pak> pak, string& path) -> string;
   auto loadFirmware(const Firmware&) -> std::shared_ptr<vfs::file>;
   virtual auto unload() -> void;
   auto refresh() -> void;
+  auto loadGameInputMappings() -> void;
+  auto processGameInputMappings(bool load) -> void;
+  auto clearGameInputMappings() -> void;
   auto setBoolean(const string& name, bool value) -> bool;
   auto setOverscan(bool value) -> bool;
   auto setColorBleed(bool value) -> bool;
+  auto setDeinterlacing(const string& value) -> bool;
   auto error(const string& text) -> void;
   auto load(mia::Pak& node, string name) -> bool;
   auto save(mia::Pak& node, string name) -> bool;
   virtual auto input(ares::Node::Input::Input) -> void;
+  auto input(ares::Node::Input::Input, string port, string device, string name) -> void;
   auto inputKeyboard(string name) -> bool;
   auto handleLoadResult(LoadResult result) -> void;
   virtual auto load(Menu) -> void {}
@@ -33,6 +48,7 @@ struct Emulator {
   virtual auto notify(const string& message) -> void {}
   virtual auto arcade() -> bool { return false; }
   virtual auto group() -> string { return manufacturer; }
+  virtual auto gameBrowserCategories() -> std::vector<GameBrowserCategory> { return {}; }
   virtual auto portMenu(Menu& portMenu, ares::Node::Port port) -> void {}
 
   struct Firmware {
@@ -52,12 +68,16 @@ struct Emulator {
   std::shared_ptr<mia::Pak> gamepad;
   std::shared_ptr<mia::Pak> gb;
   std::vector<InputPort> ports;
+  std::vector<InputPort> gameInputPorts;
+  string gameInputKey, gameInputTitle;
   std::vector<string> inputBlacklist;
   std::vector<string> portBlacklist;
+  std::vector<string> peripheralConfigurationBlacklist;
 
   struct Configuration {
     bool visible = true;  //whether or not to show this emulator in the load menu
     string game;          //the most recently used folder for games for each emulator core
+    std::vector<string> peripherals;  //persisted peripheral selection for each input port
   } configuration;
 
   struct Latch {

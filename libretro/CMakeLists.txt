@@ -39,6 +39,11 @@ endforeach()
 
 add_library(ares-n64-libretro SHARED libretro.cpp)
 
+# Present every frame synchronously from the emulation thread. The default ares
+# screen thread refreshes asynchronously, which makes retro_run() hand the
+# frontend a stale frame (and then skip one) whenever that thread wakes up late.
+target_compile_definitions(ares PUBLIC ARES_VIDEO_UNTHREADED)
+
 if(NOT WIN32)
   set_target_properties(
     ares

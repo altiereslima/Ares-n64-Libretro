@@ -25,6 +25,15 @@ endmacro()
 
 component_sources(
   COMPONENT
+    arcadedip
+  PRIMARY
+    arcade/dip-switches.cpp
+  INCLUDED
+    arcade/dip-switches.hpp
+)
+
+component_sources(
+  COMPONENT
     ay38910
   PRIMARY
     audio/ay38910/ay38910.cpp
@@ -146,6 +155,19 @@ component_sources(
     processor/arm7tdmi/memory.cpp
     processor/arm7tdmi/registers.cpp
     processor/arm7tdmi/serialization.cpp
+)
+
+component_sources(
+  COMPONENT
+    armv6m
+  PRIMARY
+    processor/armv6m/armv6m.cpp
+  INCLUDED
+    processor/armv6m/armv6m.hpp
+    processor/armv6m/decoder.cpp
+    processor/armv6m/disassembler.cpp
+    processor/armv6m/instruction.cpp
+    processor/armv6m/serialization.cpp
 )
 
 component_sources(
@@ -435,6 +457,13 @@ component_sources(
     processor/z80/registers.hpp
     processor/z80/serialization.cpp
     processor/z80/z80.hpp
+    processor/z80/sega/base.hpp
+    processor/z80/sega/s315-5114.hpp
+    processor/z80/sega/s315-5114.cpp
+    processor/z80/sega/s315-5177.hpp
+    processor/z80/sega/s315-5177.cpp
+    processor/z80/sega/mc8123.hpp
+    processor/z80/sega/mc8123.cpp
 )
 
 component_sources(
@@ -445,6 +474,16 @@ component_sources(
   INCLUDED
     rtc/s3511a/s3511a.hpp
     rtc/s3511a/serialization.cpp
+)
+
+component_sources(
+  COMPONENT
+    upd4990a
+  PRIMARY
+    rtc/upd4990a/upd4990a.cpp
+  INCLUDED
+    rtc/upd4990a/upd4990a.hpp
+    rtc/upd4990a/serialization.cpp
 )
 
 component_sources(
@@ -483,4 +522,51 @@ component_sources(
     video/v9938/serialization.cpp
     video/v9938/sprite.cpp
     video/v9938/v9938.hpp
+)
+
+component_sources(
+  COMPONENT parallel-flash
+  PRIMARY eeprom/parallel-flash/parallel-flash.cpp
+  INCLUDED eeprom/parallel-flash/parallel-flash.hpp
+)
+
+component_sources(
+  COMPONENT scsi
+  PRIMARY scsi/scsi.cpp
+  INCLUDED scsi/scsi.hpp
+)
+
+component_sources(
+  COMPONENT ncr53cf96
+  PRIMARY scsi/ncr53cf96/ncr53cf96.cpp
+  INCLUDED scsi/ncr53cf96/ncr53cf96.hpp
+           scsi/ncr53cf96/serialization.cpp
+)
+
+component_sources(
+  COMPONENT scsi-cdrom
+  PRIMARY scsi/cdrom/cdrom.cpp
+  INCLUDED scsi/cdrom/cdrom.hpp
+           scsi/cdrom/serialization.cpp
+)
+
+component_sources(
+  COMPONENT mbm29f016a
+  PRIMARY flash/mbm29f016a/mbm29f016a.cpp
+  INCLUDED flash/mbm29f016a/mbm29f016a.hpp
+           flash/mbm29f016a/serialization.cpp
+)
+
+component_sources(
+  COMPONENT lh28f400
+  PRIMARY flash/lh28f400/lh28f400.cpp
+  INCLUDED flash/lh28f400/lh28f400.hpp
+           flash/lh28f400/serialization.cpp
+)
+
+component_sources(
+  COMPONENT upd4701
+  PRIMARY io/upd4701/upd4701.cpp
+  INCLUDED io/upd4701/upd4701.hpp
+           io/upd4701/serialization.cpp
 )

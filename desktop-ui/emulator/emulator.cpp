@@ -1,5 +1,6 @@
 #include "../desktop-ui.hpp"
 #include "emulators.cpp"
+#include "../input/game-input.hpp"
 
 std::vector<std::shared_ptr<Emulator>> emulators;
 std::shared_ptr<Emulator> emulator;
@@ -20,6 +21,52 @@ auto Emulator::enumeratePorts(string name) -> std::vector<InputPort>& {
   return ports;
 }
 
+auto Emulator::configuredPeripheral(const string& portName) -> string* {
+  if(configuration.peripherals.size() < ports.size()) configuration.peripherals.resize(ports.size());
+  for(auto index : range(ports.size())) {
+    if(ports[index].name == portName) return &configuration.peripherals[index];
+  }
+  return nullptr;
+}
+
+auto Emulator::setPeripheralConfiguration(const string& portName, const string& peripheral) -> bool {
+  if(auto configured = configuredPeripheral(portName)) {
+    *configured = peripheral;
+    return true;
+  }
+  return false;
+}
+
+auto Emulator::applyPeripheralConfiguration() -> void {
+  if(configuration.peripherals.size() < ports.size()) configuration.peripherals.resize(ports.size());
+
+  for(auto index : range(ports.size())) {
+    auto& peripheral = configuration.peripherals[index];
+    if(!peripheral) continue;
+
+    auto& portName = ports[index].name;
+    if(std::ranges::find(peripheralConfigurationBlacklist, portName) != peripheralConfigurationBlacklist.end()) continue;
+
+    auto port = root->find<ares::Node::Port>(portName);
+    if(!port) continue;
+
+    if(peripheral == "Nothing") {
+      port->disconnect();
+      continue;
+    }
+
+    auto supported = port->supported();
+    if(std::ranges::find(supported, peripheral) == supported.end()) continue;
+
+    if(auto connected = port->connected()) {
+      if(connected->name() == peripheral) continue;
+    }
+
+    port->disconnect();
+    if(port->allocate(peripheral)) port->connect();
+  }
+}
+
 auto Emulator::location() -> string {
   return {Path::userData(), "ares/Saves/", name, "/"};
 }
@@ -34,6 +81,16 @@ auto Emulator::locate(const string& location, const string& suffix, const string
   string pathname = {path, *system, "/"};
   directory::create(pathname);
   return {pathname, Location::prefix(location), suffix};
+}
+
+auto Emulator::locateArcadeBios(string location, string board, string filename) -> string {
+  auto root = Location::dir(location);
+  if(Location::prefix(root).iequals(board)) root = Location::dir(root);
+  string bios = {root, filename};
+  if(inode::exists(bios)) return bios;
+  string alternate = {root, board, "/", filename};
+  if(inode::exists(alternate)) return alternate;
+  return bios;
 }
 
 //handles region selection when games support multiple regions
@@ -71,6 +128,10 @@ auto Emulator::handleLoadResult(LoadResult result) -> void {
     case invalidROM:
       errorText = { "There was an error trying to parse the selected ROM. \n",
                     "Your ROM may be corrupt or contain a bad dump. " };
+      break;
+    case unsupportedMedia:
+      errorText = { "This title was recognized, but its hardware configuration \n",
+                    "is not currently supported by ares. " };
       break;
     case wrongMediaType:
       errorText = { "The selected ROM media type is ", result.mediaType, " \n",
@@ -130,18 +191,22 @@ auto Emulator::handleLoadResult(LoadResult result) -> void {
 
 auto Emulator::load(const string& location) -> bool {
   Program::Guard guard;
-  if(inode::exists(location)) locationQueue.push_back(location);
-  
+  if(location && (arcade() || inode::exists(location))) locationQueue.push_back(location);
+
+  peripheralConfigurationBlacklist.clear();
   LoadResult result = load();
   handleLoadResult(result);
   if(result != successful) {
     return false;
   }
+  loadGameInputMappings();
   setBoolean("Color Emulation", settings.video.colorEmulation);
   setBoolean("Deep Black Boost", settings.superFamicom.deepBlackBoost);
   setBoolean("Interframe Blending", settings.video.interframeBlending);
   setOverscan(settings.video.overscan);
   setColorBleed(settings.video.colorBleed);
+  setDeinterlacing(settings.video.deinterlacing);
+  applyPeripheralConfiguration();
 
   latch = {};
   root->power();
@@ -201,6 +266,7 @@ auto Emulator::loadFirmware(const Firmware& firmware) -> std::shared_ptr<vfs::fi
 auto Emulator::unload() -> void {
   Program::Guard guard;
   save();
+  clearGameInputMappings();
   root->unload();
   game = {};
   system = {};
@@ -264,11 +330,31 @@ auto Emulator::setColorBleed(bool value) -> bool {
   return false;
 }
 
+auto Emulator::setDeinterlacing(const string& value) -> bool {
+  Program::Guard guard;
+  if(!root) return false;
+  if(name == "Nintendo 64" || name == "Nintendo 64DD") return false;
+  if(name == "Arcade" && game->pak->attribute("board") == "nintendo/aleck64") return false;
+
+  for(auto& screen : root->find<ares::Node::Video::Screen>()) {
+    screen->setDeinterlace(value);
+  }
+  return true;
+}
+
 auto Emulator::error(const string& text) -> void {
   program.error(text);
 }
 
 auto Emulator::input(ares::Node::Input::Input input) -> void {
+  auto device = ares::Node::parent(input);
+  if(!device) return;
+  auto port = ares::Node::parent(device);
+  if(!port) return;
+  return Emulator::input(input, port->name(), device->name(), input->name());
+}
+
+auto Emulator::input(ares::Node::Input::Input input, string portName, string deviceName, string inputName) -> void {
   //looking up inputs is very time-consuming; skip call if input was called too recently
   //note: allow rumble to be polled at full speed to prevent missed motor events
   if(!input->cast<ares::Node::Input::Rumble>()) {
@@ -278,18 +364,14 @@ auto Emulator::input(ares::Node::Input::Input input) -> void {
   }
 
   lock_guard<recursive_mutex> programinputLock(program.inputMutex);
-  auto device = ares::Node::parent(input);
-  if(!device) return;
-
-  auto port = ares::Node::parent(device);
-  if(!port) return;
   
-  for(auto& inputPort : ports) {
-    if(inputPort.name != port->name()) continue;
+  auto& activePorts = gameInputPorts.empty() ? ports : gameInputPorts;
+  for(auto& inputPort : activePorts) {
+    if(inputPort.name != portName) continue;
     for(auto& inputDevice : inputPort.devices) {
-      if(inputDevice.name != device->name()) continue;
+      if(inputDevice.name != deviceName) continue;
       for(auto& inputNode : inputDevice.inputs) {
-        if(inputNode.name != input->name()) continue;
+        if(inputNode.name != inputName) continue;
         if(auto button = input->cast<ares::Node::Input::Button>()) {
           auto pressed = inputNode.effectiveMapping().pressed();
           return button->setValue(pressed);
@@ -298,6 +380,11 @@ auto Emulator::input(ares::Node::Input::Input input) -> void {
           auto value = inputNode.effectiveMapping().value();
           return axis->setValue(value);
         }
+        if(auto trigger = input->cast<ares::Node::Input::Trigger>()) {
+          //normalise the full span of a host axis onto the trigger's own range
+          auto value = inputNode.effectiveMapping().value();
+          return trigger->setValue((value + 32768) >> 1);
+        }
         if(auto rumble = input->cast<ares::Node::Input::Rumble>()) {
           if(auto target = dynamic_cast<InputRumble*>(&inputNode.effectiveMapping())) {
             return target->rumble(rumble->strongValue(), rumble->weakValue());
@@ -305,9 +392,9 @@ auto Emulator::input(ares::Node::Input::Input input) -> void {
         }
       }
       for(auto& inputPair : inputDevice.pairs) {
-        if(inputPair.name != input->name()) continue;
+        if(inputPair.name != inputName) continue;
         if(auto axis = input->cast<ares::Node::Input::Axis>()) {
-          auto value = inputPair.effectiveMappingHi().value() - inputPair.effectiveMappingLo().value();
+          auto value = inputPair.value();
           return axis->setValue(value);
         }
       }
@@ -330,4 +417,68 @@ auto Emulator::inputKeyboard(string name) -> bool {
   }
 
   return false;
+}
+
+auto Emulator::loadGameInputMappings() -> void {
+  if(name == "Arcade") return;  //Arcade builds game inputs from the manifest.
+  clearGameInputMappings();
+  if(!game || !game->pak || ports.empty()) return;
+
+  gameInputTitle = GameInput::profileTitle(game->location, game->pak->attribute("title"));
+  if(!gameInputTitle) gameInputTitle = "Game";
+  gameInputKey = Settings::inputKey(string{gameInputTitle}.downcase());
+
+  gameInputPorts = ports;
+  for(u32 port = 0; port < ports.size(); port++) {
+    for(u32 device = 0; device < ports[port].devices.size(); device++) {
+      gameInputPorts[port].devices[device].inheritMappings(ports[port].devices[device]);
+    }
+  }
+  processGameInputMappings(true);
+  inputManager.bind();
+}
+
+auto Emulator::processGameInputMappings(bool load) -> void {
+  if(!gameInputKey) return;
+  string base = string{name}.replace(" ", "").replace("(", "").replace(")", "");
+  string path = {base, "/GameInputs"};
+  auto document = load ? settings[{path, "/", gameInputKey}] : Markup::Node{gameInputKey};
+  auto mapping = [&](string key, InputMapping& input) {
+    if(load) {
+      if(auto node = document[key]) {
+        input.setAssignments(node.string());
+      }
+    } else if(input.assigned()) {
+      document(key).setValue(input.assignmentString());
+    }
+  };
+  for(auto& port : gameInputPorts) {
+    for(auto& device : port.devices) {
+      string prefix = {Settings::inputKey(port.name), "/", Settings::inputKey(device.name), "/"};
+      for(auto& input : device.inputs) mapping({prefix, Settings::inputKey(input.name, true)}, input.configuredMapping());
+      for(auto& pair : device.pairs) {
+        string key = {prefix, Settings::inputKey(pair.name, true)};
+        mapping({key, "/Lo"}, pair.configuredMappingLo());
+        mapping({key, "/Hi"}, pair.configuredMappingHi());
+      }
+    }
+  }
+  if(!load) {
+    if(auto parent = settings[path]) {
+      if(auto previous = parent[gameInputKey]) parent.remove(previous);
+    }
+    if(document.size()) {
+      document("title").setValue(gameInputTitle);
+      settings(path).append(document);
+    }
+  }
+}
+
+auto Emulator::clearGameInputMappings() -> void {
+  if(!gameInputKey) return;
+  inputSettings.cancelAssignment();
+  processGameInputMappings(false);
+  gameInputPorts.clear();
+  gameInputKey.reset();
+  gameInputTitle.reset();
 }

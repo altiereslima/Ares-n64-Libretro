@@ -1,15 +1,55 @@
 auto CPU::serialize(serializer& s) -> void {
   Thread::serialize(s);
 
+  if(s.writing()) {
+    if(gtePending.count) flushGTEWrites();
+    gte.latchFinish();
+  } else {
+    gte.latch.active = false;
+  }
+
   s(ram);
   s(scratchpad);
 
-  s(exeLoaded);
+  s(fastBooted);
   s(accruedCycles);
+  s(timerStepped);
   s(cyclesUntilForcedSync);
+  s(instructionsSinceYield);
+  s(mulDivRemaining);
+  s(mulOperand);
+  s(readHold);
+  s(recoveryWait);
+  s(onDieHalf);
+  s(recoveryPort);
+  s(gte.remaining);
+  s(gte.command);
+  for(auto& entry : writeQueue.entries) {
+    s(entry.address);
+    s(entry.data);
+    s(entry.size);
+    s(entry.lanes);
+  }
+  s(writeQueue.head);
+  s(writeQueue.count);
+  s(writeQueue.remaining);
+  s(writeQueue.page);
+  s(busAccess);
+  s(busTransactionClocks);
+  s(readRemaining);
+  s(readLatency);
+  s(readWritebackRemaining);
+  s(readTarget);
 
   s(pipeline.address);
   s(pipeline.instruction);
+  for(auto& instruction : prefetched) {
+    s(instruction.address);
+    s(instruction.instruction);
+    bool valid = instruction.address != ~0u;
+    s(valid);
+    if(s.reading() && !valid) instruction.address = ~0u;
+  }
 
   for(auto& load : delay.load) {
     u32 index = load.target ? load.target - ipu.r : ~0;
@@ -24,12 +64,21 @@ auto CPU::serialize(serializer& s) -> void {
   s(delay.branch[1].take);
   s(delay.branch[1].address);
   s(delay.interrupt);
+  s(gtePending.count);
+  for(auto& entry : gtePending.entry) {
+    s(entry.control);
+    s(entry.reg);
+    s(entry.timer);
+    s(entry.data);
+  }
+  delay.branchPending = (delay.branch[0].slot ? 1 : 0) | (delay.branch[1].slot ? 2 : 0);
+  delay.loadPending = (delay.load[0].target ? 1 : 0) | (delay.load[1].target ? 2 : 0);
 
   for(auto& line : icache.lines) {
     s(line.words);
     s(line.tag);
+    s(line.valid);
   }
-
   s(exception.triggered);
 
   s(breakpoint.lastPC);
@@ -62,6 +111,7 @@ auto CPU::serialize(serializer& s) -> void {
   s(scc.breakpoint.enable.kernel);
   s(scc.breakpoint.enable.user);
   s(scc.breakpoint.enable.trap);
+  if(s.reading()) breakpoint.active = scc.breakpoint.enable.master;
   s(scc.targetAddress);
   s(scc.badVirtualAddress);
   s(scc.status.frame[0].interruptEnable);
@@ -130,6 +180,8 @@ auto CPU::serialize(serializer& s) -> void {
   s(gte.mac.t);
   s(gte.lzcs);
   s(gte.lzcr);
+  s(gte.lzcrNext);
+  s(gte.lzcrDelay);
   s(gte.rotation.a.x);
   s(gte.rotation.a.y);
   s(gte.rotation.a.z);

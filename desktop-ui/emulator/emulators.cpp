@@ -6,6 +6,13 @@ namespace ares::Atari2600 {
 #include "atari-2600.cpp"
 #endif
 
+#ifdef CORE_A52
+namespace ares::Atari5200 {
+  auto load(Node::System& node, string name) -> bool;
+}
+#include "atari-5200.cpp"
+#endif
+
 #ifdef CORE_CV
   namespace ares::ColecoVision {
     auto load(Node::System& node, string name) -> bool;
@@ -87,7 +94,6 @@ namespace ares::Atari2600 {
     auto load(Node::System& node, string name) -> bool;
   }
   #include "neo-geo-aes.cpp"
-  #include "neo-geo-mvs.cpp"
 #endif
 
 #ifdef CORE_NGP
@@ -169,6 +175,10 @@ auto Emulator::construct() -> void {
   emulators.push_back(std::make_shared<Atari2600>());
   #endif
 
+  #ifdef CORE_A52
+  emulators.push_back(std::make_shared<Atari5200>());
+  #endif
+
   #ifdef CORE_WS
   emulators.push_back(std::make_shared<WonderSwan>());
   emulators.push_back(std::make_shared<WonderSwanColor>());
@@ -244,7 +254,6 @@ auto Emulator::construct() -> void {
 
   #ifdef CORE_NG
   emulators.push_back(std::make_shared<NeoGeoAES>());
-  emulators.push_back(std::make_shared<NeoGeoMVS>());
   #endif
 
   #ifdef CORE_NGP

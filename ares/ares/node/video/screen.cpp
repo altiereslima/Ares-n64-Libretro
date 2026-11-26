@@ -55,6 +55,8 @@ auto Screen::power() -> void {
   memory::fill<u32>(_rotate.get(), _canvasWidth * _canvasHeight, _fillColor);
   memory::fill<n1>(_lineOverrideActive.data(), _canvasWidth * _canvasHeight, false);
   memory::fill<const u32*>(_lineOverride.data(), _canvasWidth * _canvasHeight, nullptr);
+  _phosphorHistoryValid = false;
+  _deinterlaceHistoryValid = false;
 }
 
 auto Screen::pixels(bool frame) -> std::span<u32> {
@@ -67,6 +69,8 @@ auto Screen::resetPalette() -> void {
   lock_guard<recursive_mutex> lock(_mutex);
   _palette.reset();
   refreshPalette();
+  _phosphorHistoryValid = false;
+  _deinterlaceHistoryValid = false;
 }
 
 auto Screen::resetSprites() -> void {
@@ -90,6 +94,7 @@ auto Screen::refreshRateHint(double refreshRate) -> void {
 
 auto Screen::setViewport(u32 x, u32 y, u32 width, u32 height) -> void {
   lock_guard<recursive_mutex> lock(_mutex);
+  if(_viewportX != x || _viewportY != y || _viewportWidth != width || _viewportHeight != height) _deinterlaceHistoryValid = false;
   _viewportX = x;
   _viewportY = y;
   _viewportWidth  = width;
@@ -103,8 +108,10 @@ auto Screen::setOverscan(bool overscan) -> void {
 
 auto Screen::setSize(u32 width, u32 height) -> void {
   lock_guard<recursive_mutex> lock(_mutex);
+  if(_width != width || _height != height) _deinterlaceHistoryValid = false;
   _width  = width;
   _height = height;
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setScale(f64 scaleX, f64 scaleY) -> void {
@@ -124,6 +131,7 @@ auto Screen::setSaturation(f64 saturation) -> void {
   _saturation = saturation;
   _palette.reset();
   refreshPalette();
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setGamma(f64 gamma) -> void {
@@ -131,6 +139,7 @@ auto Screen::setGamma(f64 gamma) -> void {
   _gamma = gamma;
   _palette.reset();
   refreshPalette();
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setLuminance(f64 luminance) -> void {
@@ -138,11 +147,13 @@ auto Screen::setLuminance(f64 luminance) -> void {
   _luminance = luminance;
   _palette.reset();
   refreshPalette();
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setFillColor(u32 fillColor) -> void {
   lock_guard<recursive_mutex> lock(_mutex);
   _fillColor = fillColor;
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setColorBleed(bool colorBleed) -> void {
@@ -153,6 +164,12 @@ auto Screen::setColorBleed(bool colorBleed) -> void {
 auto Screen::setColorBleedWidth(u32 width) -> void {
   lock_guard<recursive_mutex> lock(_mutex);
   _colorBleedWidth = width;
+}
+
+auto Screen::setPhosphor(bool phosphor) -> void {
+  lock_guard<recursive_mutex> lock(_mutex);
+  _phosphor = phosphor;
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::setInterframeBlending(bool interframeBlending) -> void {
@@ -170,6 +187,17 @@ auto Screen::setProgressive(bool progressiveDouble) -> void {
   _interlace = false;
   _progressive = true;
   _progressiveDouble = progressiveDouble;
+  _deinterlaceHistoryValid = false;
+}
+
+auto Screen::setDeinterlace(string deinterlace) -> void {
+  lock_guard<recursive_mutex> lock(_mutex);
+  if(deinterlace != "Weave" && deinterlace != "Bob"
+  && deinterlace != "Blend" && deinterlace != "Phosphor") deinterlace = "Weave";
+  _deinterlace = deinterlace;
+  _deinterlaceHistory.reset();
+  _deinterlaceHistoryValid = false;
+  if(_output) memory::fill<u32>(_output.get(), _canvasWidth * _canvasHeight, 0);
 }
 
 auto Screen::setInterlace(bool interlaceField) -> void {
@@ -197,6 +225,7 @@ auto Screen::colors(u32 colors, std::function<n64 (n32)> color) -> void {
   _color = color;
   _palette.reset();
   refreshPalette();
+  _phosphorHistoryValid = false;
 }
 
 auto Screen::bypassFrame() -> void {
@@ -240,6 +269,20 @@ auto Screen::refresh() -> void {
   auto input  = _inputB.get();
   auto output = _output.get();
 
+  auto phosphor = [](u32 current, u32 previous) -> u32 {
+    u32 color = current & 0xff000000;
+    for(u32 shift : {0, 8, 16}) {
+      auto rise = current >> shift & 0xff;
+      auto decay = (previous >> shift & 0xff) >> 1;
+      color |= max(rise, decay) << shift;
+    }
+    return color;
+  };
+
+  if(_interlace && _deinterlace == "Blend" && !_deinterlaceHistory) {
+    _deinterlaceHistory = std::make_unique<u32[]>(width * height);
+  }
+
   for(u32 y : range(height)) {
     auto source = input  + y * pitch;
     auto target = output + y * width;
@@ -251,7 +294,35 @@ auto Screen::refresh() -> void {
         *target++ = color;
       }
     } else if(_interlace) {
-      if((_interlaceField & 1) == (y & 1)) {
+      if(_deinterlace == "Phosphor") {
+        for(u32 x : range(width)) {
+          auto current = (y & 1) == u32(_interlaceField) ? _palette[*source++] : 0xff000000;
+          *target = phosphor(current, *target);
+          target++;
+        }
+      } else if(_deinterlace != "Weave") {
+        u32 sourceY = y, nextY = y;
+        if((y & 1) != u32(_interlaceField)) {
+          sourceY = y ? y - 1 : min(1u, height - 1);
+          nextY = y + 1 < height ? y + 1 : sourceY;
+        }
+        source = input + sourceY * pitch;
+        auto next = input + nextY * pitch;
+        for(u32 x : range(width)) {
+          auto color = _palette[*source++];
+          if(sourceY != nextY) {
+            auto other = _palette[*next++];
+            color = (color & other) + (((color ^ other) & 0xfefefefe) >> 1);
+          }
+          if(_deinterlace == "Blend") {
+            auto& previous = _deinterlaceHistory[y * width + x];
+            auto current = color;
+            if(_deinterlaceHistoryValid) color = (color & previous) + (((color ^ previous) & 0xfefefefe) >> 1);
+            previous = current;
+          }
+          *target++ = color;
+        }
+      } else if((_interlaceField & 1) == (y & 1)) {
         for(u32 x : range(width)) {
           auto color = _palette[*source++];
           *target++ = color;
@@ -262,6 +333,17 @@ auto Screen::refresh() -> void {
       for(u32 x : range(width)) {
         auto color = _palette[*source++];
         *target++ = color;
+      }
+    } else if(_phosphor) {
+      for(u32 x : range(width)) {
+        auto current = _palette[*source++];
+        if(!_phosphorHistoryValid) {
+          *target++ = current;
+          continue;
+        }
+
+        *target = phosphor(current, *target);
+        target++;
       }
     } else if(_interframeBlending) {
       n32 mask = 1 << 24 | 1 << 16 | 1 << 8 | 1 << 0;
@@ -277,6 +359,9 @@ auto Screen::refresh() -> void {
       }
     }
   }
+
+  if(_phosphor) _phosphorHistoryValid = true;
+  if(_interlace && _deinterlace == "Blend") _deinterlaceHistoryValid = true;
 
   if (_colorBleed) {
     n32 mask = 1 << 24 | 1 << 16 | 1 << 8 | 1 << 0;
@@ -324,6 +409,9 @@ auto Screen::refresh() -> void {
       }
     }
     output = _rotate.get();
+    auto x = viewX;
+    viewX = viewY;
+    viewY = width - x - viewWidth;
     swap(width, height);
     swap(viewWidth, viewHeight);
   }
@@ -338,6 +426,8 @@ auto Screen::refresh() -> void {
       }
     }
     output = _rotate.get();
+    viewX = width - viewX - viewWidth;
+    viewY = height - viewY - viewHeight;
   }
 
   if(_rotation == 270) {
@@ -350,6 +440,9 @@ auto Screen::refresh() -> void {
       }
     }
     output = _rotate.get();
+    auto y = viewY;
+    viewY = viewX;
+    viewX = height - y - viewHeight;
     swap(width, height);
     swap(viewWidth, viewHeight);
   }
@@ -375,6 +468,7 @@ auto Screen::clearOverrideLineDraw(u32 y) -> void {
 auto Screen::refreshPalette() -> void {
   lock_guard<recursive_mutex> lock(_mutex);
   if(_palette) return;
+  _deinterlaceHistoryValid = false;
 
   //generate the color lookup palettes to convert native colors to ARGB8888
   _palette = std::make_unique<u32[]>(_colors);
@@ -429,6 +523,8 @@ auto Screen::serialize(string& output, string depth) -> void {
   output.append(depth, "  fillColor: ", _fillColor, "\n");
   output.append(depth, "  colorBleed: ", _colorBleed, "\n");
   output.append(depth, "  interlace: ", _interlace, "\n");
+  output.append(depth, "  deinterlace: ", _deinterlace, "\n");
+  output.append(depth, "  phosphor: ", _phosphor, "\n");
   output.append(depth, "  interframeBlending: ", _interframeBlending, "\n");
   output.append(depth, "  rotation: ", _rotation, "\n");
 }
@@ -448,8 +544,11 @@ auto Screen::unserialize(Markup::Node node) -> void {
   _fillColor = node["fillColor"].natural();
   _colorBleed = node["colorBleed"].boolean();
   _interlace = node["interlace"].natural();
+  _deinterlace = node["deinterlace"].string();
+  _phosphor = node["phosphor"].boolean();
   _interframeBlending = node["interframeBlending"].boolean();
   _rotation = node["rotation"].natural();
   resetPalette();
   resetSprites();
+  setDeinterlace(_deinterlace);
 }

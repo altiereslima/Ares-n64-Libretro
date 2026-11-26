@@ -3,6 +3,7 @@ namespace Media {
   #include "mame.cpp"
   #include "arcade.cpp"
   #include "atari-2600.cpp"
+  #include "atari-5200.cpp"
   #include "colecovision.cpp"
   #include "myvision.cpp"
   #include "famicom.cpp"
@@ -48,6 +49,7 @@ namespace Media {
 auto Medium::create(string name) -> std::shared_ptr<Pak> {
   if(name == "Arcade") return std::make_shared<Media::Arcade>();
   if(name == "Atari 2600") return std::make_shared<Media::Atari2600>();
+  if(name == "Atari 5200") return std::make_shared<Media::Atari5200>();
   if(name == "ColecoVision") return std::make_shared<Media::ColecoVision>();
   if(name == "MyVision") return std::make_shared<Media::MyVision>();
   if(name == "Famicom") return std::make_shared<Media::Famicom>();
@@ -141,21 +143,28 @@ auto Medium::manifestDatabase(string sha256) -> string {
 
 //search game database for manifest, if one exists
 auto Medium::manifestDatabaseArcade(string rom) -> string {
-  loadDatabase();
+  auto source = database();
+  for(auto node : source.list) {
+    if(node["name"].string().iequals(rom)) return BML::serialize(node);
+  }
+  return {};
+}
 
-  //search the database for a given named game entry
-  for(auto& database : Media::databases) {
-    if(database.name == name()) {
-      for(auto node : database.list) {
-        if(node["name"].string().iequals(rom)) {
-          return BML::serialize(node);
-        }
-      }
+auto Medium::arcadeRomAvailable(string location, Markup::Node info) -> bool {
+  Media::Mame loader;
+  auto resolver = [&](string parent) { return BML::unserialize(manifestDatabaseArcade(parent)); };
+  for(auto region : {"maincpu", "maincpu-rom", "cslot1-maincpu", "prg", "user1"}) {
+    for(auto rom : info[{"game/", region}].find("rom")) {
+      auto filename = rom["name"].string();
+      if(!filename) continue;
+      maybe<u32> checksum;
+      if(rom["crc"]) checksum = (u32)rom["crc"].string().hex();
+      bool available = bool(loader.loadRomFile(location, filename, region, info, resolver, checksum, false));
+      if(available && !info["game"].find("disk").empty()) available = (bool)loader.locateDisk(location, info, resolver);
+      return available;
     }
   }
-
-  //database or game entry not found
-  return {};
+  return false;
 }
 
 //
@@ -241,7 +250,7 @@ auto CompactDisc::readDataSectorCUE(string filename, u32 sectorID) -> std::vecto
   if(!cuesheet.load(filename, nullptr, nullptr)) return {};
 
   for(auto& file : cuesheet.files) {
-    u64 offset = 0;
+    u64 offset = file.skipBytes();
     auto location = string{Location::path(filename), file.name};
 
     if(file.type == "binary") {
@@ -318,7 +327,7 @@ auto LaserDisc::readDataSector(string mmiPath, string cuePath, u32 sectorID) -> 
   if(!cuesheet.load(mmiPath, archive.get(), &archive->findFile(cuePath).get())) return {};
 
   for(auto& file : cuesheet.files) {
-    u64 offset = 0;
+    u64 offset = file.skipBytes();
     if(file.type == "binary") {
       auto filePathInArchive = file.archiveFolder;
       filePathInArchive.append(file.name);

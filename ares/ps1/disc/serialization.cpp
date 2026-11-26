@@ -14,12 +14,15 @@ auto Disc::serialize(serializer& s) -> void {
   s(drive.mode.sectorSize);
   s(drive.mode.xaADPCM);
   s(drive.mode.speed);
-  s(drive.recentlyReset);
+  s(drive.headerValid);
+  s(drive.sectorsRead);
+  s(drive.headerLag);
   s(drive.seeking);
   s(drive.seekDelay);
   s(drive.seekRetries);
   s(drive.seekType);
   s(drive.pendingOperation);
+  s(drive.firstSectorPending);
 
   s(audio.mute);
   s(audio.muteADPCM);
@@ -32,20 +35,28 @@ auto Disc::serialize(serializer& s) -> void {
 
   s(cdxa.filter.file);
   s(cdxa.filter.channel);
+  s(cdxa.current.file);
+  s(cdxa.current.channel);
+  s(cdxa.current.active);
   s(cdxa.sample.left);
   s(cdxa.sample.right);
   s(cdxa.monaural);
   s(cdxa.samples);
   s(cdxa.previousSamples);
+  s(cdxa.resampler.ring);
+  s(cdxa.resampler.frames);
+  s(cdxa.resampler.position);
+  s(cdxa.resampler.phase);
+  s(cdxa.resampler.head);
+  s(cdxa.resampler.count);
 
-  s(command.current.command);
-  s(command.current.invocation);
-  s(command.current.pending);
-  s(command.current.counter);
-  s(command.queued.command);
-  s(command.queued.pending);
+  s(command.secondResponse.command);
+  s(command.secondResponse.pending);
+  s(command.secondResponse.counter);
+  s(command.secondResponse.session);
   s(command.transfer.counter);
-  s(command.transfer.started);;
+  s(command.transfer.started);
+  s(drive.standby);
   s(command.transfer.command);
 
   s(irq.flag);
@@ -67,6 +78,9 @@ auto Disc::serialize(serializer& s) -> void {
 
   s(fifo.parameter);
   s(fifo.response);
+  s(fifo.responseRing);
+  s(fifo.responseReads);
+  s(fifo.responseLength);
   s(fifo.data);
   s(fifo.deferred.ready.type);
   s(fifo.deferred.ready.data);
@@ -74,6 +88,7 @@ auto Disc::serialize(serializer& s) -> void {
   s(fifo.deferred.complete.data);
   s(fifo.deferred.acknowledge.type);
   s(fifo.deferred.acknowledge.data);
+  s(fifo.deferred.counter);
 
   s(ssr.error);
   s(ssr.motorOn);
@@ -86,6 +101,7 @@ auto Disc::serialize(serializer& s) -> void {
   s(io.index);
   s(io.soundMapEnable);
   s(io.sectorBufferReadRequest);
+  s(io.sectorBufferLoaded);
   s(io.sectorBufferWriteRequest);
 
   s(counter.sector);

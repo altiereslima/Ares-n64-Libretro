@@ -10,6 +10,10 @@ struct Screen : Video {
 
   auto canvasWidth() const -> u32 { return _canvasWidth; }
   auto canvasHeight() const -> u32 { return _canvasHeight; }
+  auto viewportX() const -> u32 { return _viewportX; }
+  auto viewportY() const -> u32 { return _viewportY; }
+  auto viewportWidth() const -> u32 { return _viewportWidth; }
+  auto viewportHeight() const -> u32 { return _viewportHeight; }
   auto width() const -> u32 { return _width; }
   auto height() const -> u32 { return _height; }
   auto scaleX() const -> f64 { return _scaleX; }
@@ -26,8 +30,10 @@ struct Screen : Video {
 
   auto fillColor() const -> u32 { return _fillColor; }
   auto colorBleed() const -> bool { return _colorBleed; }
+  auto phosphor() const -> bool { return _phosphor; }
   auto interframeBlending() const -> bool { return _interframeBlending; }
   auto rotation() const -> u32 { return _rotation; }
+  auto deinterlace() const -> string { return _deinterlace; }
 
   auto resetPalette() -> void;
   auto resetSprites() -> void;
@@ -49,11 +55,13 @@ struct Screen : Video {
   auto setFillColor(u32 fillColor) -> void;
   auto setColorBleed(bool colorBleed) -> void;
   auto setColorBleedWidth(u32 width) -> void;
+  auto setPhosphor(bool phosphor) -> void;
   auto setInterframeBlending(bool interframeBlending) -> void;
   auto setRotation(u32 rotation) -> void;
 
   auto setProgressive(bool progressiveDouble = false) -> void;
   auto setInterlace(bool interlaceField) -> void;
+  auto setDeinterlace(string deinterlace) -> void;
 
   auto attach(Node::Video::Sprite) -> void;
   auto detach(Node::Video::Sprite) -> void;
@@ -88,6 +96,7 @@ protected:
   u32  _fillColor = 0;
   bool _colorBleed = false;
   u32  _colorBleedWidth = 1;
+  bool _phosphor = false;
   bool _interframeBlending = false;
   bool _overscan = true;
   u32  _rotation = 0;  //counter-clockwise (90 = left, 270 = right)
@@ -98,6 +107,7 @@ protected:
   std::unique_ptr<u32[]> _output;
   std::unique_ptr<u32[]> _rotate;
   std::unique_ptr<u32[]> _palette;
+  std::unique_ptr<u32[]> _deinterlaceHistory;
   std::vector<n1> _lineOverrideActive;
   std::vector<const u32*> _lineOverride;
   std::vector<Node::Video::Sprite> _sprites;
@@ -115,8 +125,11 @@ protected:
   bool _progressiveDouble = false;
   bool _interlace = false;
   bool _interlaceField = false;
+  string _deinterlace = "Weave";
+  bool _deinterlaceHistoryValid = false;
   u32  _viewportX = 0;
   u32  _viewportY = 0;
   u32  _viewportWidth = 0;
   u32  _viewportHeight = 0;
+  bool _phosphorHistoryValid = false;
 };

@@ -44,14 +44,24 @@ auto SPU::unload() -> void {
 }
 
 auto SPU::main() -> void {
-  sample();
+  if(transfer.mode == 2 && !fifo.empty()) {
+    if(fifo.size() >= 8) fifoWriteBlock();
+    else if(transfer.type == 2) fifoWriteManual();
+  }
+  if(transfer.mode == 3 && fifo.size() <= 24) fifoReadBlock();
+  if(transfer.mode == 2 && fifo.size() < 8) transfer.request = 1;
+  if(transfer.mode == 3 && fifo.full()) transfer.request = 1;
+  if(transfer.samplePhase == 0) sample();
+  transfer.samplePhase = (transfer.samplePhase + 1) % 3;
   step(1);
 }
 
 auto SPU::sample() -> void {
   s32 lsum = 0, lreverb = 0;
   s32 rsum = 0, rreverb = 0;
-  s16 lcdaudio = 0, rcdaudio = 0;
+  disc.cdxa.pullSample();
+  s16 lcdaudio = disc.cdda.sample.left  + disc.cdxa.sample.left;
+  s16 rcdaudio = disc.cdda.sample.right + disc.cdxa.sample.right;
   s32 modulation = 0;
   for(auto& voice : this->voice) {
     auto [lvoice, rvoice] = voice.sample(modulation);
@@ -72,11 +82,12 @@ auto SPU::sample() -> void {
     rreverb = 0;
   }
   noise.update();
+  envelopeClock++;
+  captureVolume(0, lcdaudio);
+  captureVolume(1, rcdaudio);
   if(cdaudio.enable) {
-    lcdaudio = disc.cdda.sample.left  + disc.cdxa.sample.left;
-    rcdaudio = disc.cdda.sample.right + disc.cdxa.sample.right;
-    lcdaudio = amplify(lcdaudio, cdaudio.volume[0]);
-    rcdaudio = amplify(rcdaudio, cdaudio.volume[1]);
+    lcdaudio = amplify(lcdaudio, s16(cdaudio.volume[0]));
+    rcdaudio = amplify(rcdaudio, s16(cdaudio.volume[1]));
     lsum += lcdaudio;
     rsum += rcdaudio;
     if(cdaudio.reverb) {
@@ -89,12 +100,11 @@ auto SPU::sample() -> void {
   rsum = amplify(sclamp<16>(rsum + rfb), volume[1].current);
   volume[0].tick();
   volume[1].tick();
-  captureVolume(0, lcdaudio);
-  captureVolume(1, rcdaudio);
   captureVolume(2, sclamp<16>(voice[1].adsr.lastVolume));
   captureVolume(3, sclamp<16>(voice[3].adsr.lastVolume));
   capture.address += 2;
-  stream->frame(lsum / 32768.0, rsum / 32768.0);
+  double gain = system.konamiGV() ? 5.0 : 1.0;
+  stream->frame(sclamp<16>(lsum * gain) / 32768.0, sclamp<16>(rsum * gain) / 32768.0);
 }
 
 auto SPU::step(u32 clocks) -> void {
@@ -103,12 +113,13 @@ auto SPU::step(u32 clocks) -> void {
 }
 
 auto SPU::power(bool reset) -> void {
-  Thread::create(44'100, std::bind_front(&SPU::main, this));
+  Thread::create(44'100 * 3, std::bind_front(&SPU::main, this));
   random.array({ram.data, ram.size});
 
   master = {};
   noise.step = 0;
   noise.shift = 0;
+  noise.enableUnused = 0;
   noise.level = 0;
   noise.count = 0;
   transfer = {};
@@ -179,6 +190,7 @@ auto SPU::power(bool reset) -> void {
     v.volume[1] = {};
     v.envelope = {};
     v.counter = 0;
+    v.keyOnDelay = 0;
     v.pmon = 0;
     v.non = 0;
     v.eon = 0;
@@ -187,6 +199,8 @@ auto SPU::power(bool reset) -> void {
     v.endx = 0;
   }
   capture = {};
+  for(auto& half : unknown1dbc) half = 0;
+  for(auto& half : unknown1e60) half = 0;
   fifo.flush();
 }
 

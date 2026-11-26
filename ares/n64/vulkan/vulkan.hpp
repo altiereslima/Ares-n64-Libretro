@@ -1,5 +1,3 @@
-#include "rdp_device.hpp"
-
 namespace Vulkan {
 struct Context;
 }

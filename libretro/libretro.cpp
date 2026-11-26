@@ -1,6 +1,9 @@
 #include <libretro.h>
 #include <vulkan_headers.hpp>
 #include <libretro_vulkan.h>
+// Upstream ares no longer exposes the paraLLEl-RDP headers through
+// n64/vulkan/vulkan.hpp, so pull in the Vulkan context declarations directly.
+#include <context.hpp>
 
 #include <algorithm>
 #include <array>
@@ -740,6 +743,7 @@ ares::Node::System root;
 bool initialized = false;
 bool loaded = false;
 uint64_t frameCounter = 0;
+size_t serializeSize = 0;  // the N64 state size is fixed once content is loaded
 
 auto saveContent() -> void {
   if(!loaded || !root || !platform.game) return;
@@ -763,6 +767,7 @@ auto unloadContent() -> void {
   platform.clearFrames();
   loaded = false;
   frameCounter = 0;
+  serializeSize = 0;
 }
 
 auto configureMiaDirectories() -> void {
@@ -822,6 +827,27 @@ auto connectController(unsigned portIndex) -> void {
   } else if(wantsRumblePak) {
     pakPort->allocate("Rumble Pak");
     pakPort->connect();
+  }
+}
+
+// NTSC and PAL cartridges share IPL3 code for most CIC pairs, so mia derives the
+// CIC variant from the header region code. Keep both in sync when forcing a region.
+auto overrideRegion(bool pal) -> void {
+  auto pak = platform.game->pak;
+  pak->setAttribute("region", pal ? "PAL" : "NTSC");
+  static const char* pairs[][2] = {
+    {"CIC-NUS-6101", "CIC-NUS-7102"},
+    {"CIC-NUS-6102", "CIC-NUS-7101"},
+    {"CIC-NUS-6103", "CIC-NUS-7103"},
+    {"CIC-NUS-6105", "CIC-NUS-7105"},
+    {"CIC-NUS-6106", "CIC-NUS-7106"},
+  };
+  auto cic = pak->attribute("cic");
+  for(auto& pair : pairs) {
+    if(cic == pair[pal ? 0 : 1]) {
+      pak->setAttribute("cic", pair[pal ? 1 : 0]);
+      break;
+    }
   }
 }
 
@@ -956,8 +982,8 @@ RETRO_API void retro_run(void) {
 
 RETRO_API size_t retro_serialize_size(void) {
   if(!loaded || !root) return 0;
-  auto state = root->serialize(true);
-  return state.size();
+  if(!serializeSize) serializeSize = root->serialize(true).size();
+  return serializeSize;
 }
 
 RETRO_API bool retro_serialize(void* data, size_t size) {
@@ -1033,6 +1059,13 @@ RETRO_API bool retro_load_game(const struct retro_game_info* info) {
     return false;
   }
 
+  auto regionOption = optionValue("ares_n64_region", "auto");
+  if(regionOption[0] == 'N' || regionOption[0] == 'P') {
+    overrideRegion(regionOption[0] == 'P');
+    std::string message = "region forced to ";
+    message += regionOption;
+    logMessage(RETRO_LOG_INFO, message.c_str());
+  }
   auto region = platform.game->pak->attribute("region");
   platform.pal = region.beginsWith("PAL");
   platform.refreshRate.store(platform.pal ? 50.0 : 60.0);

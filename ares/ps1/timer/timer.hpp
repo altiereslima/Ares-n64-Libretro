@@ -5,9 +5,11 @@ struct Timer : Memory::Interface {
   auto load(Node::Object) -> void;
   auto unload() -> void;
 
-  auto step(u32 clocks) -> void;
+  auto step(u32 clocks, bool update = true) -> void;
   auto hsync(bool line) -> void;
   auto vsync(bool line) -> void;
+  auto updateNextEvent() -> void;
+  auto sysclockGated() const -> bool { return (timers[0].clock == 0 && timers[0].synchronize) || (timers[1].clock == 0 && timers[1].synchronize) || (timers[2].synchronize && timers[2].divider == 0); }
   auto power(bool reset) -> void;
 
   //io.cpp
@@ -32,12 +34,15 @@ struct Timer : Memory::Interface {
 
     //timer.cpp
     auto step(u32 clocks = 1) -> void;
+    auto nextEvent() const -> u32;
     auto irq() -> void;
     auto reset() -> void;
 
     n16 counter;
     n16 target;
     n1  synchronize;
+    n1  syncFreeRun;
+    auto syncActive() const -> bool { return synchronize && !syncFreeRun; }
     n2  mode;
     n1  resetMode;
     n1  irqOnTarget;
@@ -54,6 +59,7 @@ struct Timer : Memory::Interface {
   //internal:
     n1  paused;
     n1  irqTriggered;
+    n1  resetPending;
     n8  wait;
   } timers[3] = {{*this, 0}, {*this, 1}, {*this, 2}};
 };

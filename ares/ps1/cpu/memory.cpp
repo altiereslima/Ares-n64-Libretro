@@ -1,5 +1,24 @@
 //read code from the bus
-inline auto CPU::fetch(u32 address) -> u32 {
+alwaysinline auto CPU::fetch(u32 address) -> u32 {
+  if(likely((address & 0x7fff'ffff) <= 0x007f'ffff)) {
+    return icache.fetch(address);
+  }
+
+  return fetchSlow(address);
+}
+
+auto CPU::fetchSlow(u32 address) -> u32 {
+  auto physicalAddress = address & 0x1fff'ffff;
+  if((physicalAddress & 0xffff'fc00) == 0x1f80'0000
+  || (physicalAddress & 0xffff'fff0) == 0x1f80'1070
+  || (physicalAddress & 0xffff'fff0) == 0x1f80'1820
+  ) {
+    if constexpr(Accuracy::CPU::BusErrors) {
+      exception.busInstruction();
+    }
+    return 0;
+  }
+
   switch(address >> 29) {
   //cached
   case 0:  //$00000000-$1fffffff  KUSEG
@@ -9,14 +28,16 @@ inline auto CPU::fetch(u32 address) -> u32 {
 
   //uncached
   case 5: {//$a0000000-$bfffffff  KSEG1
-    if(likely(address <= 0xa07f'ffff)) {
-      step(bus.calcAccessTime<false, false>(address, Word));
-      auto data = ram.read<Word>(address);
+    if(likely(address <= (0xa000'0000 | memory.ramLimit))) {
+      beginBusTransaction(address, Word, true);
+      auto data = bus.readLatch = ram.read<Word>(address);
+      endBusTransaction();
       return data;
     }
     if(likely(address >= 0xbfc0'0000)) {
-      step(bus.calcAccessTime<false, false>(address, Word));
+      beginBusTransaction(address, Word, true);
       auto data = bios.read<Word>(address);
+      endBusTransaction();
       return data;
     }
     if(likely(address >= 0xbf00'0000)) {
@@ -62,20 +83,30 @@ inline auto CPU::peek(u32 address) -> u32 {
   return 0;
 }
 
+template<u32 Size>
+inline auto CPU::readIO(u32 address) -> u32 {
+  beginBusTransaction(address, Size);
+  onDieHalf = Size == Half && bus.isOnDie(address);
+  if(!bus.busConfiguration(address).width) {
+    auto data = bus.read<Size>(address);
+    endBusTransaction(true);
+    return data;
+  }
+  endBusTransaction(true);
+  return bus.read<Size>(address);
+}
+
 //read data from the bus
 template<u32 Size>
-inline auto CPU::read(u32 address) -> u32 {
-  if constexpr(Accuracy::CPU::Breakpoints) {
-    if(breakpoint.testData<Read, Size>(address)) return 0;  //nop
-  }
-
-  if constexpr(Accuracy::CPU::AddressErrors) {
-    if constexpr(Size == Half) {
-      if(unlikely(address & 1)) return exception.address<Read>(address), 0;  //nop
+inline auto CPU::readBus(u32 address) -> u32 {
+  if(likely(!scc.status.cache.isolate && (address & 0x7fff'ffff) <= memory.ramLimit)) {
+    beginBusTransaction(address, Size);
+    auto data = ram.read<Size>(address);
+    endBusTransaction(true);
+    if(unlikely(memory.cache.dataEnable & !memory.cache.scratchpadEnable)) {
+      scratchpad.write<Word>(address & 0x3fc, ram.read<Word>(address & ~3u));
     }
-    if constexpr(Size == Word) {
-      if(unlikely(address & 3)) return exception.address<Read>(address), 0;  //nop
-    }
+    return data;
   }
 
   if(unlikely(address >= 0xfffe'0000)) {
@@ -87,28 +118,30 @@ inline auto CPU::read(u32 address) -> u32 {
   case 0: {//KUSEG
     if(unlikely(scc.status.cache.isolate)) {
       if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
+        return icache.readTag(address);
+      }
+      if(memory.cache.codeEnable == 1) {
         return icache.read(address);
       }
-      if(memory.cache.tagTest == 0 && memory.cache.scratchpadEnable == 1) {
+      if(memory.cache.scratchpadEnable == 1) {
         return scratchpad.read<Size>(address);
       }
       return 0;  //nop
     }
-    if(likely(address <= 0x007f'ffff)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
+    if(likely(address <= memory.ramLimit)) {
+      beginBusTransaction(address, Size);
       auto data = ram.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0x1fc0'0000)) {
-      auto data = memory.read<Size>(address);
+      beginBusTransaction(address, Size);
+      auto data = bios.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0x1f00'0000)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      auto data = memory.read<Size>(address);
-      return data;
+      return readIO<Size>(address);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -120,28 +153,30 @@ inline auto CPU::read(u32 address) -> u32 {
   case 4: {//KSEG0
     if(unlikely(scc.status.cache.isolate)) {
       if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
+        return icache.readTag(address);
+      }
+      if(memory.cache.codeEnable == 1) {
         return icache.read(address);
       }
-      if(memory.cache.tagTest == 0 && memory.cache.scratchpadEnable == 1) {
+      if(memory.cache.scratchpadEnable == 1) {
         return scratchpad.read<Size>(address);
       }
       return 0;  //nop
     }
-    if(likely(address <= 0x807f'ffff)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
+    if(likely(address <= (0x8000'0000 | memory.ramLimit))) {
+      beginBusTransaction(address, Size);
       auto data = ram.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0x9fc0'0000)) {
-      auto data = memory.read<Size>(address);
+      beginBusTransaction(address, Size);
+      auto data = bios.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0x9f00'0000)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      auto data = memory.read<Size>(address);
-      return data;
+      return readIO<Size>(address);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -151,22 +186,194 @@ inline auto CPU::read(u32 address) -> u32 {
 
   //uncached
   case 5: {//KSEG1
-    if(likely(address <= 0xa07f'ffff)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
+    if(likely(address <= (0xa000'0000 | memory.ramLimit))) {
+      beginBusTransaction(address, Size);
       auto data = ram.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0xbfc0'0000)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
+      beginBusTransaction(address, Size);
       auto data = bios.read<Size>(address);
+      endBusTransaction(true);
       return data;
     }
     if(likely(address >= 0xbf00'0000)) {
-      step(bus.calcAccessTime<false, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      auto data = memory.read<Size>(address);
+      return readIO<Size>(address);
+    }
+    if constexpr(Accuracy::CPU::BusErrors) {
+      exception.busData();
+    }
+    return 0;
+  }
+
+  case 1:
+  case 2:
+  case 3:
+  case 6:
+  case 7: {
+    if constexpr(Accuracy::CPU::BusErrors) {
+      exception.busData();
+    }
+    return 0;
+  }
+
+  }
+
+  unreachable;
+}
+
+template<u32 Mode>
+auto CPU::Breakpoint::testDataBus(u32 address) -> bool {
+  return testData<Mode, Word>(address);
+}
+
+inline auto CPU::readWordPartial(u32 address, u32 lanes) -> u32 {
+  if constexpr(Accuracy::CPU::Breakpoints) {
+    if(unlikely(breakpoint.active)) {
+      u32 start = lanes & 1 ? address & ~3u : address;
+      if(breakpoint.testData<Read, Byte>(start)) return 0;
+    }
+  }
+
+  address &= ~3u;
+  return readBusWordPartial(address, lanes);
+}
+
+inline auto CPU::writeWordPartial(u32 address, u32 data, u32 lanes) -> void {
+  ioPoll = {};
+  if constexpr(Accuracy::CPU::Breakpoints) {
+    if(unlikely(breakpoint.active)) {
+      u32 start = lanes & 1 ? address & ~3u : address;
+      breakpoint.testData<Write, Byte>(start);
+    }
+  }
+
+  address &= ~3u;
+  return writeBus<Word>(address, data, lanes);
+}
+
+inline auto CPU::readBusWordPartial(u32 address, u32 lanes) -> u32 {
+  const u32 virtualAddress = address;
+  if(likely(!scc.status.cache.isolate && (address & 0x7fff'ffff) <= memory.ramLimit)) {
+    beginBusTransaction(virtualAddress, Word);
+    auto data = ram.read<Word>(address);
+    endBusTransaction(true);
+    return data;
+  }
+
+  auto read16BitBus = [&]() -> u32 {
+    if(lanes == 0b1111) return bus.read<Word>(address);
+    bus.read<Half>(address + (lanes & 0b0011 ? 0 : 2));
+    return bus.readLatch;
+  };
+
+  if(unlikely(address >= 0xfffe'0000)) {
+    return memory.read<Word>(address);
+  }
+
+  switch(address >> 29) {
+  case 0: {
+    if(unlikely(scc.status.cache.isolate)) {
+      if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
+        return icache.readTag(address);
+      }
+      if(memory.cache.codeEnable == 1) {
+        return icache.read(address);
+      }
+      if(memory.cache.scratchpadEnable == 1) {
+        return scratchpad.read<Word>(address);
+      }
+      return 0;
+    }
+    if(likely(address <= memory.ramLimit)) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = ram.read<Word>(address);
+      endBusTransaction(true);
       return data;
+    }
+    if(likely(address >= 0x1fc0'0000)) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = bios.read<Word>(address);
+      endBusTransaction(true);
+      return data;
+    }
+    if(likely(address >= 0x1f00'0000)) {
+      address &= 0x1fff'ffff;
+      if(address >= 0x1f80'1c00 && address <= 0x1f80'1fff && bus.busConfiguration(address).width == Half) {
+        beginBusTransaction(virtualAddress, lanes == 0b1111 ? Word : Half);
+        endBusTransaction();
+        return read16BitBus();
+      }
+      return readIO<Word>(virtualAddress);
+    }
+    if constexpr(Accuracy::CPU::BusErrors) {
+      exception.busData();
+    }
+    return 0;
+  }
+
+  case 4: {
+    if(unlikely(scc.status.cache.isolate)) {
+      if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
+        return icache.readTag(address);
+      }
+      if(memory.cache.codeEnable == 1) {
+        return icache.read(address);
+      }
+      if(memory.cache.scratchpadEnable == 1) {
+        return scratchpad.read<Word>(address);
+      }
+      return 0;
+    }
+    if(likely(address <= (0x8000'0000 | memory.ramLimit))) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = ram.read<Word>(address);
+      endBusTransaction(true);
+      return data;
+    }
+    if(likely(address >= 0x9fc0'0000)) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = bios.read<Word>(address);
+      endBusTransaction(true);
+      return data;
+    }
+    if(likely(address >= 0x9f00'0000)) {
+      address &= 0x1fff'ffff;
+      if(address >= 0x1f80'1c00 && address <= 0x1f80'1fff && bus.busConfiguration(address).width == Half) {
+        beginBusTransaction(virtualAddress, lanes == 0b1111 ? Word : Half);
+        endBusTransaction();
+        return read16BitBus();
+      }
+      return readIO<Word>(virtualAddress);
+    }
+    if constexpr(Accuracy::CPU::BusErrors) {
+      exception.busData();
+    }
+    return 0;
+  }
+
+  case 5: {
+    if(likely(address <= (0xa000'0000 | memory.ramLimit))) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = ram.read<Word>(address);
+      endBusTransaction(true);
+      return data;
+    }
+    if(likely(address >= 0xbfc0'0000)) {
+      beginBusTransaction(virtualAddress, Word);
+      auto data = bios.read<Word>(address);
+      endBusTransaction(true);
+      return data;
+    }
+    if(likely(address >= 0xbf00'0000)) {
+      address &= 0x1fff'ffff;
+      if(address >= 0x1f80'1c00 && address <= 0x1f80'1fff && bus.busConfiguration(address).width == Half) {
+        beginBusTransaction(virtualAddress, lanes == 0b1111 ? Word : Half);
+        endBusTransaction();
+        return read16BitBus();
+      }
+      return readIO<Word>(virtualAddress);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -191,25 +398,31 @@ inline auto CPU::read(u32 address) -> u32 {
   unreachable;
 }
 
-//write data to the bus
 template<u32 Size>
-inline auto CPU::write(u32 address, u32 data) -> void {
-  //NOTE: CPU has a write fifo that prevents stalls until full
-  //for now we disable write cycle timing to simulate an infinite write fifo
-  //once we implement the real thing; then we can uncomment the step() calls
+inline auto CPU::read(u32 address) -> u32 {
   if constexpr(Accuracy::CPU::Breakpoints) {
-    if(breakpoint.testData<Write, Size>(address)) return;
+    if(unlikely(breakpoint.active) && breakpoint.testData<Read, Size>(address)) return 0;
   }
 
-  if constexpr(Accuracy::CPU::AddressErrors) {
-    if constexpr(Size == Half) {
-      if(unlikely(address & 1)) return exception.address<Write>(address);
-    }
-    if constexpr(Size == Word) {
-      if(unlikely(address & 3)) return exception.address<Write>(address);
-    }
+  if(Accuracy::CPU::AddressErrors && ((Size == Half && (address & 1)) || (Size == Word && (address & 3)))) {
+    return exception.address<Read>(address), 0;
   }
 
+  return readBus<Size>(address);
+}
+
+template<u32 Size>
+inline auto CPU::writeBus(u32 address, u32 data, u32 lanes) -> void {
+  if(likely(!scc.status.cache.isolate && (address & 0x7fff'ffff) <= memory.ramLimit)) {
+    return queueWrite(address, data, Size, lanes);
+  }
+
+  auto writeScratchpad = [&]() -> void {
+    if(likely(lanes == (1u << Size) - 1)) return scratchpad.write<Size>(address, data);
+    for(u32 byte = 0; byte < Size; byte++) {
+      if(lanes & 1u << byte) scratchpad.write<Byte>(address + byte, data >> (byte * 8));
+    }
+  };
   if(unlikely(address >= 0xfffe'0000)) {
     return memory.write<Size>(address, data);
   }
@@ -219,26 +432,27 @@ inline auto CPU::write(u32 address, u32 data) -> void {
   case 0: {//KUSEG
     if(unlikely(scc.status.cache.isolate)) {
       if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
-        return icache.invalidate(address);
+        return icache.writeTag(address, data);
       }
-      if(memory.cache.tagTest == 0 && memory.cache.scratchpadEnable == 1) {
-        return scratchpad.write<Size>(address, data);
+      if((memory.cache.invalidate || memory.cache.lock) && memory.cache.codeEnable == 1) {
+        return icache.writeTag(address, 0);
+      }
+      if(memory.cache.codeEnable == 1) {
+        return icache.writeData(address, data);
+      }
+      if(memory.cache.scratchpadEnable == 1) {
+        return writeScratchpad();
       }
       return;
     }
-    if(likely(address <= 0x007f'ffff)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return ram.write<Size>(address, data);
+    if(likely(address <= memory.ramLimit)) {
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0x1fc0'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return bios.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0x1f00'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      return memory.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -250,26 +464,27 @@ inline auto CPU::write(u32 address, u32 data) -> void {
   case 4: {//KSEG0
     if(unlikely(scc.status.cache.isolate)) {
       if(memory.cache.tagTest == 1 && memory.cache.codeEnable == 1) {
-        return icache.invalidate(address);
+        return icache.writeTag(address, data);
       }
-      if(memory.cache.tagTest == 0 && memory.cache.scratchpadEnable == 1) {
-        return scratchpad.write<Size>(address, data);
+      if((memory.cache.invalidate || memory.cache.lock) && memory.cache.codeEnable == 1) {
+        return icache.writeTag(address, 0);
+      }
+      if(memory.cache.codeEnable == 1) {
+        return icache.writeData(address, data);
+      }
+      if(memory.cache.scratchpadEnable == 1) {
+        return writeScratchpad();
       }
       return;
     }
-    if(likely(address <= 0x807f'ffff)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return ram.write<Size>(address, data);
+    if(likely(address <= (0x8000'0000 | memory.ramLimit))) {
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0x9fc0'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return bios.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0x9f00'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      return memory.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -279,19 +494,14 @@ inline auto CPU::write(u32 address, u32 data) -> void {
 
   //uncached
   case 5: {//KSEG1
-    if(likely(address <= 0xa07f'ffff)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return ram.write<Size>(address, data);
+    if(likely(address <= (0xa000'0000 | memory.ramLimit))) {
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0xbfc0'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      return bios.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if(likely(address >= 0xbf00'0000)) {
-      step(bus.calcAccessTime<true, false>(address, Size));
-      address &= 0x1fff'ffff;
-      auto& memory = bus.mmio(address);
-      return memory.write<Size>(address, data);
+      return queueWrite(address, data, Size, lanes);
     }
     if constexpr(Accuracy::CPU::BusErrors) {
       exception.busData();
@@ -312,4 +522,25 @@ inline auto CPU::write(u32 address, u32 data) -> void {
   }
 
   }
+}
+
+template<u32 Size>
+inline auto CPU::write(u32 address, u32 data, u32 lanes) -> void {
+  ioPoll = {};
+  bool misaligned = Accuracy::CPU::AddressErrors && ((Size == Half && (address & 1)) || (Size == Word && (address & 3)));
+  if constexpr(Accuracy::CPU::Breakpoints) {
+    if(unlikely(breakpoint.active)) {
+      if(misaligned) {
+        if(breakpoint.testData<Write, Size>(address)) return;
+      } else {
+        breakpoint.testData<Write, Size>(address);
+      }
+    }
+  }
+
+  if(misaligned) {
+    return exception.address<Write>(address);
+  }
+
+  return writeBus<Size>(address, data, lanes);
 }

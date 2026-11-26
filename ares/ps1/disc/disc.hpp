@@ -34,8 +34,7 @@ struct Disc : Memory::Interface {
   auto title() const -> string { return information.title; }
   auto region() const -> string { return information.region; }
   auto audioCD() const -> bool { return information.audio; }
-  auto executable() const -> bool { return information.executable; }
-  auto noDisc() const -> bool { return !title(); }
+  auto noDisc() const -> bool { return !fd; }
 
   //disc.cpp
   auto load(Node::Object) -> void;
@@ -45,8 +44,8 @@ struct Disc : Memory::Interface {
   auto connect() -> void;
   auto disconnect() -> void;
 
-  auto main() -> void;
   auto step(u32 clocks) -> void;
+  auto nextEvent() const -> u32;
   auto power(bool reset) -> void;
 
   //io.cpp
@@ -74,9 +73,12 @@ struct Disc : Memory::Interface {
   auto ack() -> void;
   auto error(u8 code) -> void;
   auto queueResponse(ResponseType type, std::initializer_list<u8> response) -> void;
+  auto queueResponse(ResponseType type, const u8* response, u32 size) -> void;
+  auto loadResponseRing(const u8* response, u32 size) -> void;
   auto flushDeferredResponse() -> void;
 
   auto executeCommand(u8 operation) -> void;
+  auto executeSecondResponse(u8 operation) -> void;
   auto commandTest() -> void;
   auto commandInvalid() -> void;
   auto commandNop() -> void;
@@ -104,6 +106,8 @@ struct Disc : Memory::Interface {
   auto commandTestStartReadSCEX() -> void;
   auto commandTestStopReadSCEX() -> void;
   auto commandTestControllerDate() -> void;
+  auto commandTestString(const char* text) -> void;
+  auto commandReset() -> void;
   auto commandGetID() -> void;
   auto commandReadS() -> void;
   auto commandReadToc() -> void;
@@ -131,6 +135,7 @@ struct Disc : Memory::Interface {
     auto distance() const -> u32;
     auto updateSubQ() -> void;
     auto clockSector() -> void;
+    auto updateHeader(s32 target) -> void;
 
     struct LBA {
       s32 current;
@@ -156,7 +161,11 @@ struct Disc : Memory::Interface {
       n1 speed;
     } mode;
 
-    u32 recentlyReset;
+    n1 headerValid;
+    n2 headerLag;
+    n1 standby;
+    n1 firstSectorPending;
+    u32 sectorsRead;
     u32 seeking;
     u32 seekDelay;
     u16 seekRetries;
@@ -174,6 +183,7 @@ struct Disc : Memory::Interface {
   struct CDDA {
     Disc& self;
     CDDA(Disc& self) : self(self) {}
+    s32 peak = 0;
 
     maybe<Drive&> drive;
     Node::Audio::Stream stream;
@@ -209,7 +219,10 @@ struct Disc : Memory::Interface {
     auto unload(Node::Object) -> void;
 
     auto clockSector() -> void;
+    auto reset() -> void;
     auto clockSample() -> void;
+    auto resample(s16 left, s16 right) -> void;
+    auto pullSample() -> void;
     template<bool isStereo, bool is8bit> auto decodeADPCM(n1 halfSampleRate) -> void;
     template<bool isStereo, bool is8bit> auto decodeBlock(s16* output, u16 address) -> void;
 
@@ -217,6 +230,12 @@ struct Disc : Memory::Interface {
       n8 file;
       n8 channel;
     } filter;
+
+    struct Current {
+      n8 file;
+      n8 channel;
+      n1 active;
+    } current;
 
     struct Sample {
       s16 left;
@@ -226,20 +245,24 @@ struct Disc : Memory::Interface {
     bool monaural;
     queue<s16[4032 * 8]> samples;
     s32 previousSamples[4];
+
+    struct Resampler {
+      s16 ring[2][32];
+      s16 frames[32][2];
+      n32 position;
+      n32 phase;
+      n32 head;
+      n32 count;
+    } resampler;
   } cdxa{*this};
 
   struct Command {
-    struct Current {
+    struct SecondResponse {
       u8  command;
-      u8  invocation;
       n1  pending;
       s32 counter;
-    } current;
-
-    struct Pending {
-      u8 command;
-      n1 pending;
-    } queued;
+      u8 session;
+    } secondResponse;
 
     struct Transfer {
       s32 counter;
@@ -275,6 +298,9 @@ struct Disc : Memory::Interface {
   struct FIFO {
     queue<u8[16]> parameter;
     queue<u8[16]> response;
+    u8 responseRing[16] = {};
+    u32 responseReads = 0;
+    u32 responseLength = 0;
     queue<u8[2340]> data;
 
     struct DeferredData {
@@ -286,6 +312,7 @@ struct Disc : Memory::Interface {
       DeferredData ready;       //INT1
       DeferredData complete;    //INT2
       DeferredData acknowledge; //INT3,4,5
+      s32 counter;
     } deferred;
   } fifo;
 
@@ -306,6 +333,7 @@ struct Disc : Memory::Interface {
     n2 index;
     n1 soundMapEnable;
     n1 sectorBufferReadRequest;
+    n1 sectorBufferLoaded;
     n1 sectorBufferWriteRequest;
   } io;
 
@@ -321,7 +349,6 @@ struct Disc : Memory::Interface {
     string title;
     string region;
     boolean audio;
-    boolean executable;
   } information;
 };
 

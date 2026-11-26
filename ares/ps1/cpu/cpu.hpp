@@ -4,7 +4,6 @@ struct CPU : Thread {
   Node::Object node;
   Memory::Writable ram;
   Memory::Writable scratchpad;
-  Memory::Readable exe;
 
   struct Debugger {
     //debugger.cpp
@@ -41,30 +40,120 @@ struct CPU : Thread {
   auto unload() -> void;
 
   auto main() -> void;
-  auto step(u32 clocks) -> void;
   auto synchronize() -> void;
-  auto ioSynchronize() -> void;
+  auto resetNextEvent() -> void;
+  auto setNextEvent(u32 clocks) -> void;
+  auto ioSynchronize(u32 address) -> void;
   auto waitDMA() -> void;
+  auto dmaStallSlices(u32 slice) -> u32;
+  auto idle(u32 clocks = 0) -> void;
+  alwaysinline auto beginBusTransaction(u32 address, u32 size, bool instruction = false) -> void;
+  alwaysinline auto endBusTransaction(bool overlap = false) -> void;
+  auto flushWriteQueue() -> void;
+  auto writeQueueWindow(u32 clocks) -> u32;
+  auto writeQueueAdvance(u32 clocks) -> void;
+  auto queueWrite(u32 address, u32 data, u32 size, u32 lanes) -> void;
+  auto commitWrite(u32 address, u32 data, u32 size, u32 lanes) -> void;
+  auto busOccupied() const -> bool { return busAccess || writeQueue.remaining; }
 
-  alwaysinline auto instruction() -> void;
-  auto instructionPrologue(u32 instruction) -> void;
-  auto instructionEpilogue() -> void;
-  auto instructionHook() -> void;
+  struct WriteQueue {
+    struct Entry {
+      u32 address = 0;
+      u32 data = 0;
+      u32 size = 0;
+      u32 lanes = 0;
+    } entries[4];
+    u32 head = 0;
+    u32 count = 0;
+    u32 remaining = 0;
+    u32 page = ~0u;
+    bool stalled = false;
+  } writeQueue;
+
+  struct IOPoll {
+    u32 address = 0;
+    u32 pc = 0;
+    u32 count = 0;
+  } ioPoll;
+  bool busAccess = false;
+  u32 busTransactionClocks = 0;
+  u32 readRemaining = 0;
+  u32 readHold = 0;
+  u32 recoveryWait = 0;
+  bool onDieHalf = false;
+  u32 recoveryPort = 0;
+  u32 readLatency = 0;
+  u32 readWritebackRemaining = 0;
+  u32 readTarget = 0;
+  auto readInterlock(u32 instruction) -> void;
+
+  alwaysinline auto instructionPrologue(u32 instruction) -> void;
+  alwaysinline auto instructionEpilogue() -> void;
 
   auto power(bool reset) -> void;
 
-  n1 exeLoaded = 0;
+  n1 fastBooted = 0;
 
   u32 accruedCycles = 0;
+  u32 timerStepped = 0;
   s32 cyclesUntilForcedSync = 0;
+  u32 instructionsSinceYield = 0;
+  u32 mulDivRemaining = 0;
+  u32 mulOperand = 0;
+  auto cycleCount() const -> u64 { return clock() / scalar() + accruedCycles; }
+  auto mulDivStall() -> void { if(mulDivRemaining) step(mulDivRemaining); }
   const s32 forceSyncInterval = 1024;
+  const s32 relaxedSyncInterval = 4096;
   const s32 branchCooldownCycles = 512;
-  const s32 ioCooldownCycles = 128;
+  static constexpr u32 dmaStallGranularity = 4;
+
+  alwaysinline auto advance(u32 clocks) -> void {
+    accruedCycles += clocks;
+    cyclesUntilForcedSync -= clocks;
+    if(unlikely(readRemaining)) {
+      u32 drain = clocks;
+      if(readHold) {
+        u32 held = min(readHold, drain);
+        readHold -= held;
+        drain -= held;
+      }
+      if(drain >= readRemaining) {
+        readRemaining = 0;
+        readHold = 0;
+        busAccess = false;
+      } else {
+        readRemaining -= drain;
+      }
+    }
+    if(unlikely(mulDivRemaining | gte.remaining | gte.lzcrDelay | readLatency | readWritebackRemaining | recoveryWait)) {
+      mulDivRemaining -= min(mulDivRemaining, clocks);
+      recoveryWait -= min(recoveryWait, clocks);
+      gte.remaining -= min<u32>(gte.remaining, clocks);
+      if(unlikely(gte.lzcrDelay)) { if(clocks >= gte.lzcrDelay) { gte.lzcr = gte.lzcrNext; gte.lzcrDelay = 0; } else gte.lzcrDelay -= clocks; }
+      readLatency -= min(readLatency, clocks);
+      readWritebackRemaining -= min(readWritebackRemaining, clocks);
+    }
+  }
+
+  alwaysinline auto step(u32 clocks) -> void {
+    if(likely(!(writeQueue.count | writeQueue.remaining | writeQueue.stalled) && (s32)clocks < cyclesUntilForcedSync)) {
+      advance(clocks);
+      return;
+    }
+    stepSlow(clocks);
+  }
+  auto stepSlow(u32 clocks) -> void;
 
   struct Pipeline {
     u32 address = 0;
     n32 instruction = 0;
   } pipeline;
+  struct PrefetchedInstruction {
+    u32 address = ~0u;
+    u32 instruction = 0;
+  };
+  PrefetchedInstruction prefetched[2];
+  alwaysinline auto fetchAhead(u32 address, PrefetchedInstruction& slot) -> void;
 
   //delay-slots.cpp
   struct Delay {
@@ -83,27 +172,56 @@ struct CPU : Thread {
 
     //interrupt delay counter
     u32 interrupt;
+    u8  branchPending = 0;
+    u8  loadPending = 0;
   } delay;
+
+  struct GTEPending {
+    u8 count = 0;
+    struct Entry {
+      u8  control;
+      u8  reg;
+      u8  timer;
+      u32 data;
+    } entry[3];
+  } gtePending;
+
+  auto queueGTEWrite(bool control, u8 reg, u32 data) -> void;
+  auto processGTEWrites() -> void;
+  auto flushGTEWrites() -> void;
 
   auto load(u32& target) const -> u32;
   auto load(u32& target, u32 source) -> void;
   auto store(u32& target, u32 source) -> void;
   template<u32 N = 1> auto branch(u32 address, bool take = true) -> void;
-  auto processDelayLoad() -> void;
-  auto processDelayBranch() -> void;
+  auto branchCoprocessor(bool condition, s16 imm) -> void;
+  alwaysinline auto processDelayLoad() -> void;
+  alwaysinline auto processDelayBranch() -> void;
 
   //memory.cpp
   auto fetch(u32 address) -> u32;
+  auto fetchSlow(u32 address) -> u32;
   auto peek(u32 address) -> u32;
 
   template<u32 Size> auto read(u32 address) -> u32;
-  template<u32 Size> auto write(u32 address, u32 data) -> void;
+  template<u32 Size> auto readBus(u32 address) -> u32;
+  template<u32 Size> auto readIO(u32 address) -> u32;
+  auto readWordPartial(u32 address, u32 lanes) -> u32;
+  auto readBusWordPartial(u32 address, u32 lanes) -> u32;
+  template<u32 Size> auto write(u32 address, u32 data, u32 lanes = (1u << Size) - 1) -> void;
+  template<u32 Size> auto writeBus(u32 address, u32 data, u32 lanes = (1u << Size) - 1) -> void;
+  auto writeWordPartial(u32 address, u32 data, u32 lanes) -> void;
 
   //icache.cpp
   struct InstructionCache {
-    auto fetch(u32 address) -> u32;
+    static constexpr u32 TagMask = 0xffff'fff0;
+
+    alwaysinline auto fetch(u32 address) -> u32;
+    auto fetchSlow(u32 address) -> u32;
     auto read(u32 address) -> u32;
-    auto invalidate(u32 address) -> void;
+    auto readTag(u32 address) -> u32;
+    auto writeTag(u32 address, u32 data) -> void;
+    auto writeData(u32 address, u32 data) -> void;
     auto enable(bool) -> void;
     auto power(bool reset) -> void;
 
@@ -111,6 +229,7 @@ struct CPU : Thread {
     struct Line {
       u32 words[4];
       u32 tag;
+      u8 valid;
     } lines[256];
   } icache;
 
@@ -119,10 +238,10 @@ struct CPU : Thread {
     CPU& self;
     Exception(CPU& self) : self(self) {}
 
-    auto operator()() -> bool;
+    alwaysinline auto operator()() const -> bool { return triggered; }
     auto trigger(u32 code, n1 hardwareBreakpoint = 0) -> void;
 
-    auto interruptsPending() -> u8;
+    alwaysinline auto interruptsPending() -> u8;
     auto interrupt() -> void;
     template<u32 Mode> auto address(u32 address) -> void;
     auto busInstruction() -> void;
@@ -144,8 +263,10 @@ struct CPU : Thread {
 
     auto testCode(u32 address) -> bool;
     template<u32 Mode, u32 Size> auto testData(u32 address) -> bool;
+    template<u32 Mode> auto testDataBus(u32 address) -> bool;
 
     u32 lastPC;
+    bool active;
   } breakpoint{*this};
 
   //serialization.cpp
@@ -182,12 +303,12 @@ struct CPU : Thread {
   auto JAL(u32 imm) -> void;
   auto JALR(u32& rd, cu32& rs) -> void;
   auto JR(cu32& rs) -> void;
-  auto LB(u32& rt, cu32& rs, s16 imm) -> void;
-  auto LBU(u32& rt, cu32& rs, s16 imm) -> void;
-  auto LH(u32& rt, cu32& rs, s16 imm) -> void;
-  auto LHU(u32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto LB(u32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto LBU(u32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto LH(u32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto LHU(u32& rt, cu32& rs, s16 imm) -> void;
   auto LUI(u32& rt, u16 imm) -> void;
-  auto LW(u32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto LW(u32& rt, cu32& rs, s16 imm) -> void;
   auto LWL(u32& rt, cu32& rs, s16 imm) -> void;
   auto LWR(u32& rt, cu32& rs, s16 imm) -> void;
   auto MFHI(u32& rd) -> void;
@@ -199,8 +320,8 @@ struct CPU : Thread {
   auto NOR(u32& rd, cu32& rs, cu32& rt) -> void;
   auto OR(u32& rd, cu32& rs, cu32& rt) -> void;
   auto ORI(u32& rt, cu32& rs, u16 imm) -> void;
-  auto SB(cu32& rt, cu32& rs, s16 imm) -> void;
-  auto SH(cu32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto SB(cu32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto SH(cu32& rt, cu32& rs, s16 imm) -> void;
   auto SLL(u32& rd, cu32& rt, u8 sa) -> void;
   auto SLLV(u32& rd, cu32& rt, cu32& rs) -> void;
   auto SLT(u32& rd, cs32& rs, cs32& rt) -> void;
@@ -213,7 +334,7 @@ struct CPU : Thread {
   auto SRLV(u32& rd, cu32& rt, cu32& rs) -> void;
   auto SUB(u32& rd, cu32& rs, cu32& rt) -> void;
   auto SUBU(u32& rd, cu32& rs, cu32& rt) -> void;
-  auto SW(cu32& rt, cu32& rs, s16 imm) -> void;
+  alwaysinline auto SW(cu32& rt, cu32& rs, s16 imm) -> void;
   auto SWL(cu32& rt, cu32& rs, s16 imm) -> void;
   auto SWR(cu32& rt, cu32& rs, s16 imm) -> void;
   auto SYSCALL() -> void;
@@ -328,6 +449,38 @@ struct CPU : Thread {
   struct GTE {
     CPU& self;
     GTE(CPU& self) : self(self) {}
+
+    u32 remaining = 0;
+    u8 command = 0;
+    u32 lzcrDelay = 0;
+    u32 lzcrNext = 0;
+    auto wait(bool extra = false) -> void;
+    u32 pendingSnapshot[3];
+    auto latency(u32 instruction) const -> u32;
+
+    struct Latch {
+      struct Write {
+        u8 control;
+        u8 reg;
+        u8 latched;
+        u32 value;
+      };
+      bool active = false;
+      bool dirty = false;
+      u32 instruction = 0;
+      u32 count = 0;
+      u32 slots = 0;
+      u32 flag = 0;
+      bool lm = false;
+      u8 tv = 0, mv = 0, mm = 0, sf = 0;
+      u8 snapshot[512];
+      Write log[64];
+    } latch;
+    u8 latchTable[64][2][32];
+    auto latchBegin(u32 instruction) -> void;
+    auto latchBoundary(u32 instruction, bool control, u32 reg) const -> u32;
+    auto latchWrite(bool control, u32 reg, u32 value) -> void;
+    auto latchFinish() -> void;
 
     //color
     struct c32 {
@@ -463,6 +616,7 @@ struct CPU : Thread {
   } gte{*this};
 
   //interpreter-gte.cpp
+  auto executeGTE() -> void;
   auto AVSZ3() -> void;
   auto AVSZ4() -> void;
   auto CC(bool lm, u8 sf) -> void;
@@ -545,5 +699,15 @@ struct CPU : Thread {
     u32 instruction;
   } disassembler{*this};
 };
+
+inline auto CPU::Exception::interruptsPending() -> u8 {
+  u8 pending = self.scc.cause.interruptPending & self.scc.status.interruptMask;
+  if(likely(!pending)) return 0x00;
+  if(!self.scc.status.frame[0].interruptEnable) return 0x00;
+  if(unlikely(self.delay.interrupt)) {
+    if(--self.delay.interrupt) return 0x00;
+  }
+  return pending;
+}
 
 extern CPU cpu;

@@ -36,7 +36,7 @@ auto CPU::getControlRegister(n5 index) -> u64 {
     data = scc.badVirtualAddress;
     break;
   case  9:  //count
-    data.bit(0,31) = scc.count >> 1;
+    data.bit(0,31) = effectiveCount() >> 1;
     break;
   case 10:  //entryhi
     data.bit( 0, 7) = scc.tlb.addressSpaceID;
@@ -169,7 +169,9 @@ auto CPU::setControlRegister(n5 index, n64 data) -> void {
   //scc.badVirtualAddress = data;  //read-only
     break;
   case  9:  //count
+    flushCount();
     scc.count = data.bit(0,31) << 1;
+    forceSynchronize();  //recompute the JIT budget against the new timer distance
     break;
   case 10:  //entryhi
     scc.tlb.addressSpaceID            = data.bit( 0, 7);
@@ -177,8 +179,10 @@ auto CPU::setControlRegister(n5 index, n64 data) -> void {
     scc.tlb.region                    = data.bit(62,63);
     break;
   case 11:  //compare
+    flushCount();
     scc.compare = data.bit(0,31) << 1;
     setInterruptPending(Interrupt::Timer, 0);
+    forceSynchronize();  //recompute the JIT budget against the new timer distance
     break;
   case 12: {//status
     bool floatingPointMode = scc.status.floatingPointMode;
@@ -274,6 +278,7 @@ auto CPU::DMFC0(r64& rt, u8 rd) -> void {
     if(!scc.status.enable.coprocessor0) return exception.coprocessor0();
     if(context.bits == 32) return exception.reservedInstruction();
   }
+  if(rd == 9) flushCount();
   rt.u64 = getControlRegister(rd);
 }
 
@@ -306,6 +311,7 @@ auto CPU::MFC0(r64& rt, u8 rd) -> void {
   if(!context.kernelMode()) {
     if(!scc.status.enable.coprocessor0) return exception.coprocessor0();
   }
+  if(rd == 9) flushCount();
   rt.u64 = s32(getControlRegister(rd));
 }
 

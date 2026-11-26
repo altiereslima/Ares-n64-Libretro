@@ -1,13 +1,32 @@
+auto MDEC::notifyDMA() -> void {
+  if(!dma.enabledMask || !dma.blocked || dma.runningMask) return;
+  dma.requestChanged(cpu.active() ? cpu.clock() + (u64)cpu.accruedCycles * cpu.scalar() : clock());
+}
+
 auto MDEC::canReadDMA() -> bool {
-  return status.outputRequest && fifo.output.size() >= 32;
+  if(io.mode == Mode::DrainOutput) return status.outputRequest && fifo.output.size() > 1;
+  return status.outputRequest && fifo.output.size() >= 26;
 }
 
 auto MDEC::canWriteDMA() -> bool {
-  return status.inputRequest && fifo.input.empty();
+  return status.inputRequest && !fifo.input.full() && fifo.inputBuffer.empty() && status.remaining != 0;
 }
 
 auto MDEC::readDMA() -> u32 {
   return readWord(0x1f80'1820);
+}
+
+auto MDEC::dmaAddress(u32 address) const -> u32 {
+  if(status.outputDepth < 2) return address;
+  u32 rowWords = status.outputDepth == 3 ? 4 : 6;
+  u32 blockWords = rowWords * 8;
+  u32 word = io.outputWord;
+  u32 block = word / blockWords;
+  u32 within = word % blockWords;
+  u32 destination = (block / 2) * blockWords * 2
+                  + (within / rowWords) * rowWords * 2
+                  + (block % 2) * rowWords + within % rowWords;
+  return address + (destination - word) * 4;
 }
 
 auto MDEC::writeDMA(u32 data) -> void {
@@ -15,28 +34,35 @@ auto MDEC::writeDMA(u32 data) -> void {
 }
 
 auto MDEC::readByte(u32 address) -> u32 {
-  debug(unverified, "MDEC::readByte(", hex(address, 8L), ")");
-  return readWord(address & ~3) >> 8 * (address & 3);
+  n32 data;
+  debug(unhandled, "MDEC::readByte(", hex(address, 8L), ") -> ", hex(data, 2L));
+  return data;
 }
 
 auto MDEC::readHalf(u32 address) -> u32 {
-  debug(unverified, "MDEC::readHalf(", hex(address, 8L), ")");
-  return readWord(address & ~3) >> 8 * (address & 3);
+  n32 data;
+  debug(unhandled, "MDEC::readHalf(", hex(address, 8L), ") -> ", hex(data, 4L));
+  return data;
 }
 
 auto MDEC::readWord(u32 address) -> u32 {
   n32 data;
 
   if(address == 0x1f80'1820) {
+    refillOutputFifo();
     if(fifo.output.empty()) {
       debug(unusual, "MDEC: fifo read while empty!");
     }
+    bool available = !fifo.output.empty();
     data = fifo.output.read(data);
+    if(available && status.outputDepth >= 2) io.outputWord = (io.outputWord + 1) % (status.outputDepth == 3 ? 128 : 192);
+    refillOutputFifo();
+    if(fifo.output.empty()) processInput();
     return data;
   }
 
   if(address == 0x1f80'1824) {
-    data.bit( 0,15) = (status.remaining / 2) - 1;
+    data.bit( 0,15) = status.noOperation ? (u32)status.noOperationValue : (status.remaining / 2) - 1;
     data.bit(16,18) = status.currentBlock;
     data.bit(19,22) = 0;  //unused
     data.bit(23)     = status.outputMaskBit;
@@ -45,7 +71,7 @@ auto MDEC::readWord(u32 address) -> u32 {
     data.bit(27)     = canReadDMA();
     data.bit(28)     = canWriteDMA();
     data.bit(29)     = io.mode != Mode::Idle;
-    data.bit(30)     = fifo.input.size() >= 64;
+    data.bit(30)     = fifo.input.full() || !fifo.inputBuffer.empty();
     data.bit(31)     = fifo.output.empty();
     return data;
   }
@@ -55,29 +81,31 @@ auto MDEC::readWord(u32 address) -> u32 {
 }
 
 auto MDEC::writeByte(u32 address, u32 data) -> void {
-  debug(unverified, "MDEC::writeByte(", hex(address, 8L), ")");
-  return writeWord(address & ~3, data << 8 * (address & 3));
+  debug(unhandled, "MDEC::writeByte(", hex(address, 8L), ", ", hex(data, 2L), ")");
 }
 
 auto MDEC::writeHalf(u32 address, u32 data) -> void {
-  debug(unverified, "MDEC::writeHalf(", hex(address, 8L), ")");
-  return writeWord(address & ~3, data << 8 * (address & 3));
+  debug(unhandled, "MDEC::writeHalf(", hex(address, 8L), ", ", hex(data, 4L), ")");
 }
 
-auto MDEC::writeWord(u32 address, u32 value) -> void {
-  n32 data = value;
-
-  if(address == 0x1f80'1820) {
+auto MDEC::processInput() -> void {
+  while(io.mode != Mode::DecodeMacroblock && io.mode != Mode::DrainOutput && fifo.input.size() >= 2) {
+    if(io.mode == Mode::Idle && (!fifo.output.empty() || !fifo.pendingOutput.empty())) break;
+    n32 data = fifo.input.read(0);
+    data |= u32(fifo.input.read(0)) << 16;
     if(io.mode == Mode::Idle) {
+      status.noOperation = 0;
       switch(data >> 29) {
       case 1:
         io.mode = Mode::DecodeMacroblock;
         io.offset = 0;
-        status.remaining = data.bit(0,15) * 2;
-        if(status.remaining == 0) {
-          io.mode = Mode::Idle;  //treat as 0; though it may be 65536
-          debug(unhandled, "MDEC macroblock length=0");
-        }
+        io.outputWord = 0;
+        io.decodeBlock = 4;
+        prefetch = {};
+        prefetch.block = 4;
+        status.remaining = ((u32)data.bit(0,15) ? (u32)data.bit(0,15) : 0x10000u) * 2;
+        io.remaining = status.remaining;
+        status.remaining -= min<u32>(status.remaining, fifo.input.size());
         break;
       case 2:
         io.mode = Mode::SetQuantTable;
@@ -89,18 +117,19 @@ auto MDEC::writeWord(u32 address, u32 value) -> void {
         io.offset = 0;
         status.remaining = 64;
         break;
+      default:
+        status.noOperation = 1;
+        status.noOperationValue = data.bit(0,15);
+        break;
       }
 
+      status.outputMaskBit = data.bit(25);
+      status.outputSigned  = data.bit(26);
+      status.outputDepth   = data.bit(27,28);
       if(io.mode != Mode::Idle) {
-        //output bits are set in status register regardless of mode
-        status.outputMaskBit = data.bit(25);
-        status.outputSigned  = data.bit(26);
-        status.outputDepth   = data.bit(27,28);
         fifo.output.flush();
+        fifo.pendingOutput.flush();
       }
-    } else if(io.mode == Mode::DecodeMacroblock) {
-      fifo.input.write(data >>  0);
-      fifo.input.write(data >> 16);
     } else if(io.mode == Mode::SetQuantTable) {
       if(io.offset < 64) {
         block.luma[io.offset++ & 63] = data >>  0;
@@ -126,7 +155,19 @@ auto MDEC::writeWord(u32 address, u32 value) -> void {
         io.mode = Mode::Idle;
       }
     }
+  }
+}
 
+auto MDEC::writeWord(u32 address, u32 value) -> void {
+  n32 data = value;
+
+  if(address == 0x1f80'1820) {
+    if(!fifo.inputBuffer.empty() || fifo.input.capacity() - fifo.input.size() < 2) return;
+    fifo.input.write(data >> 0);
+    fifo.input.write(data >> 16);
+    if(io.mode == Mode::DecodeMacroblock && status.remaining) status.remaining -= 2;
+    processInput();
+    notifyDMA();
     return;
   }
 
@@ -134,18 +175,32 @@ auto MDEC::writeWord(u32 address, u32 value) -> void {
     if(data.bit(31)) {  //reset
       io.mode = Mode::Idle;
       io.offset = 0;
+      io.outputWord = 0;
+      io.decodeBlock = 4;
+      prefetch = {};
+      prefetch.block = 4;
+      fifo.input.flush();
+      fifo.inputBuffer.flush();
+      fifo.output.flush();
+      fifo.pendingOutput.flush();
+      io.resetPending = 1;
 
       status.remaining     = 0;
+      status.noOperation   = 0;
+      status.noOperationValue = 0;
+      io.remaining         = 0;
       status.currentBlock  = 4;
       status.outputMaskBit = 0;
       status.outputSigned  = 0;
       status.outputDepth   = 0;
       status.outputRequest = 0;
       status.inputRequest  = 0;
+      return;
     }
 
     status.outputRequest = data.bit(29);
     status.inputRequest  = data.bit(30);
+    notifyDMA();
     return;
   }
 
@@ -153,22 +208,36 @@ auto MDEC::writeWord(u32 address, u32 value) -> void {
 }
 
 auto MDEC::readInputFifo() -> maybe<u16> {
-  if(status.remaining == 0) {
+  if(io.resetPending || io.remaining == 0) {
     return nothing;
   }
 
-  while(fifo.input.empty()) {
-    step(128);
+  if(fifo.inputBuffer.empty()) {
+    if(fifo.input.full() || (status.remaining == 0 && !fifo.input.empty())) {
+      u32 count = min<u32>(io.remaining, fifo.input.size());
+      while(count--) fifo.inputBuffer.write(*fifo.input.read());
+    }
   }
 
-  step(1);
-  auto data = *fifo.input.read();
-  --status.remaining;
+  if(io.resetPending || io.remaining == 0 || fifo.inputBuffer.empty()) return nothing;
+  auto data = *fifo.inputBuffer.read();
+  --io.remaining;
   return data;
 }
 
 
 auto MDEC::writeOutputFifo(u32 data) -> void {
-  fifo.output.write(data);
+  u32 blockWords = status.outputDepth == 3 ? 32 : status.outputDepth == 2 ? 48 : status.outputDepth == 1 ? 16 : 8;
+  while(!io.resetPending && fifo.pendingOutput.size() >= blockWords) step(128);
+  if(io.resetPending) return;
+  fifo.pendingOutput.write(data);
+  if(!io.resetPending) refillOutputFifo();
+}
+
+auto MDEC::refillOutputFifo() -> void {
+  while(!fifo.output.full() && !fifo.pendingOutput.empty()) {
+    fifo.output.write(*fifo.pendingOutput.read());
+  }
+  notifyDMA();
 }
 

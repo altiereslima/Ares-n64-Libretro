@@ -1,7 +1,4 @@
 //used to determine if a function call (eg CPU::fetch) triggered an exception
-auto CPU::Exception::operator()() -> bool {
-  return triggered;
-}
 
 auto CPU::Exception::trigger(u32 code, n1 hardwareBreakpoint) -> void {
   triggered = true;
@@ -24,7 +21,7 @@ auto CPU::Exception::trigger(u32 code, n1 hardwareBreakpoint) -> void {
 
   self.scc.epc = self.ipu.pc;
   if(self.scc.cause.branchDelay) {
-    self.scc.epc -= 4;
+    self.scc.epc = self.ipu.pb;
     if(self.scc.cause.branchTaken) {
       self.scc.targetAddress = self.delay.branch[0].address;
     } else {
@@ -35,21 +32,18 @@ auto CPU::Exception::trigger(u32 code, n1 hardwareBreakpoint) -> void {
   //hardware bug: if an interrupt is triggered when a GTE instruction is next,
   //the GTE instruction is erroneously executed
   if(self.scc.cause.exceptionCode == 0) {
-    self.pipeline.instruction = self.peek(self.ipu.pc);
+    self.pipeline.instruction = self.prefetched[0].address == self.ipu.pc
+      ? self.prefetched[0].instruction : self.peek(self.ipu.pc);
     if(self.pipeline.instruction >> 25 == 37) self.decoderEXECUTE();
   }
 
   //exceptions and interrupts discard the execution of delay slots
+  self.prefetched[0] = self.prefetched[1] = {};
   self.delay.branch[0] = {};
   self.delay.branch[1] = {};
+  self.delay.branchPending = 0;
   self.ipu.pc = !self.scc.status.vectorLocation ? 0x8000'0080 : 0xbfc0'0180;
   self.ipu.pd = self.ipu.pc;
-}
-
-auto CPU::Exception::interruptsPending() -> u8 {
-  if(!self.scc.status.frame[0].interruptEnable) return 0x00;
-  if(self.delay.interrupt && --self.delay.interrupt) return 0x00;
-  return self.scc.cause.interruptPending & self.scc.status.interruptMask;
 }
 
 auto CPU::Exception::interrupt() -> void {

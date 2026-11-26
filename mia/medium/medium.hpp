@@ -6,9 +6,10 @@ struct Database {
 struct Medium : Pak {
   static auto create(string name) -> std::shared_ptr<Pak>;
   auto loadDatabase() -> bool;
-  auto database() -> Database;
+  virtual auto database() -> Database;
   auto manifestDatabase(string sha256) -> string;
   auto manifestDatabaseArcade(string name) -> string;
+  auto arcadeRomAvailable(string location, Markup::Node info) -> bool;
 
   string sha256;
 };

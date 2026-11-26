@@ -1,21 +1,140 @@
+#ifndef LZCR_DELAY
+#define LZCR_DELAY 3
+#endif
 auto CPU::GTE::constructTable() -> void {
   for(u32 n : range(256)) {
     unsignedNewtonRaphsonTable[n] = max(0, (0x40000 / (n + 0x100) + 1) / 2 - 0x101);
   }
   unsignedNewtonRaphsonTable[256] = 0;
+
+  memset(latchTable, 0, sizeof(latchTable));
+  auto set = [&](u32 command, bool control, u32 reg, u32 boundary) -> void {
+    latchTable[command][control][reg] = boundary;
+  };
+  auto lighting = [&](u32 command, u32 lr1, u32 lr3, u32 lg2, u32 lb1, u32 lb3, u32 rbk, u32 gbk, u32 bbk) -> void {
+    set(command, 1, 16, lr1); set(command, 1, 17, lr3); set(command, 1, 18, lg2);
+    set(command, 1, 19, lb1); set(command, 1, 20, lb3);
+    set(command, 1, 13, rbk); set(command, 1, 14, gbk); set(command, 1, 15, bbk);
+  };
+
+  for(u32 command : {0x00u, 0x01u}) {
+    set(command, 1, 24, 1); set(command, 1, 26, 1); set(command, 1, 27, 4); set(command, 1, 28, 3);
+  }
+  set(0x30, 0, 2, 3); set(0x30, 0, 4, 2);
+  set(0x30, 1, 0, 2); set(0x30, 1, 1, 4); set(0x30, 1, 2, 4);
+  set(0x30, 1, 5, 1); set(0x30, 1, 6, 4); set(0x30, 1, 7, 1);
+  set(0x30, 1, 24, 5); set(0x30, 1, 25, 4); set(0x30, 1, 26, 5); set(0x30, 1, 27, 7); set(0x30, 1, 28, 6);
+
+  lighting(0x1e, 2, 1, 1, 2, 3, 0, 2, 1);
+  lighting(0x1b, 2, 1, 1, 2, 3, 0, 2, 1);
+  lighting(0x13, 2, 1, 1, 2, 3, 0, 2, 1);
+  set(0x1b, 0, 1, 1); set(0x13, 0, 1, 1);
+  set(0x1b, 0, 6, 3); set(0x13, 0, 6, 3);
+  set(0x13, 1, 21, 2); set(0x13, 1, 22, 3); set(0x13, 1, 23, 4);
+
+  lighting(0x20, 6, 3, 8, 8, 6, 8, 9, 9);
+  set(0x20, 0, 1, 2); set(0x20, 0, 3, 1); set(0x20, 0, 4, 1); set(0x20, 0, 5, 3);
+  set(0x20, 1, 10, 3);
+  lighting(0x3f, 5, 3, 8, 7, 5, 9, 6, 9);
+  set(0x3f, 0, 1, 2); set(0x3f, 0, 3, 1); set(0x3f, 0, 4, 3); set(0x3f, 0, 5, 3); set(0x3f, 0, 6, 12);
+  set(0x3f, 1, 8, 1); set(0x3f, 1, 10, 3); set(0x3f, 1, 11, 1); set(0x3f, 1, 12, 1);
+  lighting(0x16, 5, 4, 7, 7, 5, 7, 7, 7);
+  set(0x16, 0, 3, 1); set(0x16, 0, 4, 3); set(0x16, 0, 5, 4); set(0x16, 0, 6, 15);
+  set(0x16, 1, 8, 1); set(0x16, 1, 10, 3); set(0x16, 1, 11, 2); set(0x16, 1, 12, 2);
+  set(0x16, 1, 21, 13); set(0x16, 1, 22, 14); set(0x16, 1, 23, 14);
+
+  set(0x1c, 0, 9, 1); set(0x1c, 0, 10, 2); set(0x1c, 0, 11, 2); set(0x1c, 1, 19, 1);
+  set(0x14, 0, 6, 1); set(0x14, 0, 8, 2); set(0x14, 0, 9, 2); set(0x14, 0, 10, 3); set(0x14, 0, 11, 2);
+  set(0x14, 1, 19, 1); set(0x14, 1, 22, 2);
+
+  set(0x10, 0, 8, 1);
+  set(0x2a, 0, 20, 4); set(0x2a, 0, 21, 4); set(0x2a, 0, 8, 4);
+  set(0x2a, 1, 21, 1); set(0x2a, 1, 22, 2); set(0x2a, 1, 23, 3);
+  for(u32 command : {0x1au, 0x29u}) { set(command, 0, 9, 1); set(command, 0, 11, 1); }
+  set(0x11, 0, 8, 1); set(0x11, 0, 10, 1);
+
+  set(0x28, 0, 11, 1);
+  set(0x0c, 0, 10, 1);
+  set(0x06, 0, 13, 1); set(0x06, 0, 14, 1);
+}
+
+auto CPU::GTE::latchBegin(u32 instruction) -> void {
+  latch.active = true;
+  latch.dirty = false;
+  latch.count = 0;
+  latch.instruction = instruction;
+  latch.slots = 0;
+  u32 size = (u32)((u8*)(&zsf4 + 1) - (u8*)&v);
+  memcpy(latch.snapshot, &v, size);
+  latch.flag = flag.value;
+  latch.lm = lm; latch.tv = tv; latch.mv = mv; latch.mm = mm; latch.sf = sf;
+}
+
+auto CPU::GTE::latchBoundary(u32 instruction, bool control, u32 reg) const -> u32 {
+  u32 command = instruction & 0x3f;
+  if(command == 0x12) {
+    u32 matrix = instruction >> 17 & 3, vector = instruction >> 15 & 3;
+    if(matrix == 1 && vector == 0) {
+      if(!control && reg == 1) return 2;
+      if(control && (reg == 11 || reg == 12)) return 1;
+    }
+    if(matrix == 2 && vector == 3 && !control && (reg == 9 || reg == 11)) return 1;
+    return 0;
+  }
+  return latchTable[command][control][reg & 31];
+}
+
+auto CPU::GTE::latchWrite(bool control, u32 reg, u32 value) -> void {
+  if(!latch.active) return;
+  if(latch.count >= 64) { latch.active = false; return; }
+  u32 elapsed = latch.slots;
+  bool latched = elapsed <= latchBoundary(latch.instruction, control, reg);
+  latch.log[latch.count++] = {u8(control), u8(reg), u8(latched), value};
+  if(latched) latch.dirty = true;
+}
+
+auto CPU::GTE::latchFinish() -> void {
+  if(!latch.active) return;
+  latch.active = false;
+  if(!latch.dirty) return;
+  u32 size = (u32)((u8*)(&zsf4 + 1) - (u8*)&v);
+  memcpy(&v, latch.snapshot, size);
+  flag.value = latch.flag;
+  lm = latch.lm; tv = latch.tv; mv = latch.mv; mm = latch.mm; sf = latch.sf;
+  auto apply = [&](const Latch::Write& entry) -> void {
+    if(entry.control) setControlRegister(entry.reg, entry.value);
+    else setDataRegister(entry.reg, entry.value);
+  };
+  for(u32 n = 0; n < latch.count; n++) if(latch.log[n].latched) apply(latch.log[n]);
+  u32 saved = self.pipeline.instruction;
+  self.pipeline.instruction = latch.instruction;
+  self.executeGTE();
+  self.pipeline.instruction = saved;
+  for(u32 n = 0; n < latch.count; n++) if(!latch.log[n].latched) apply(latch.log[n]);
+}
+
+auto CPU::GTE::wait(bool extra) -> void {
+  if(remaining) self.step(remaining + 1 + (extra ? 1 : 0));
+  if(self.gtePending.count) self.flushGTEWrites();
+  if(latch.active) latchFinish();
+}
+
+auto CPU::GTE::latency(u32 instruction) const -> u32 {
+  static constexpr u8 clocks[64] = {
+    16, 15, 13, 12,  5, 18,  8,  7,  6,  5, 19, 18,  6,  5, 19, 18,
+     8,  8,  8, 19, 13,  8, 44, 31, 17, 13,  8, 17, 11,  5, 14,  8,
+    30, 17, 15, 14, 12,  8,  6,  5,  5,  8, 17, 13,  8,  5,  6, 18,
+    23, 22, 20, 19, 17, 16, 14, 13, 11,  7,  6,  5, 18,  5,  5, 39,
+  };
+  return clocks[instruction & 0x3f];
 }
 
 auto CPU::GTE::countLeadingZeroes16(u16 value) -> u32 {
-  u32 zeroes = 0;
-  while(!(value >> 15) && zeroes < 16) value <<= 1, zeroes++;
-  return zeroes;
+  return std::countl_zero(value);
 }
 
 auto CPU::GTE::countLeadingZeroes32(u32 value) -> u32 {
-  u32 zeroes = 0;
-  if(!(value >> 31)) value = ~value;
-  while(value >> 31) value <<= 1, zeroes++;
-  return zeroes;
+  return std::countl_zero(value >> 31 ? ~value : value);
 }
 
 //
@@ -107,7 +226,8 @@ auto CPU::GTE::setDataRegister(u32 index, u32 data) -> void {
     break;
   case 30:
     lzcs = data;
-    lzcr = countLeadingZeroes32(lzcs);
+    lzcrNext = countLeadingZeroes32(lzcs);
+    lzcrDelay = LZCR_DELAY;
     break;
   case 31:
     break;
@@ -375,16 +495,27 @@ auto CPU::GTE::pushColor() -> void {
 
 inline auto CPU::GTE::prologue() -> void {
   flag.value = 0;
+  for(u32 n = 0; n < self.gtePending.count; n++) {
+    auto& entry = self.gtePending.entry[n];
+    if(!entry.control && entry.timer == 1) pendingSnapshot[n] = getDataRegister(entry.reg);
+  }
 }
 
 inline auto CPU::GTE::prologue(bool lm, u8 sf) -> void {
   this->lm = lm;
   this->sf = sf;
-  flag.value = 0;
+  prologue();
 }
 
 inline auto CPU::GTE::epilogue() -> void {
   flag.error = bool(flag.value & 0x7f87'e000);
+  u32 kept = 0;
+  for(u32 n = 0; n < self.gtePending.count; n++) {
+    auto entry = self.gtePending.entry[n];
+    if(!entry.control && entry.timer == 1 && getDataRegister(entry.reg) != pendingSnapshot[n]) continue;
+    self.gtePending.entry[kept++] = entry;
+  }
+  self.gtePending.count = kept;
 }
 
 //
@@ -473,12 +604,13 @@ auto CPU::CDP(bool lm, u8 sf) -> void {
 
 auto CPU::CFC2(u32& rt, u8 rd) -> void {
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
+  gte.wait(rd == 31 && (gte.command == 0x0a || gte.command == 0x0e) && gte.remaining == 18);
   load(rt, getControlRegister(rd));
 }
 
 auto CPU::CTC2(cu32& rt, u8 rd) -> void {
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
-  setControlRegister(rd, rt);
+  queueGTEWrite(true, rd, rt);
 }
 
 auto CPU::DCPL(bool lm, u8 sf) -> void {
@@ -552,20 +684,22 @@ auto CPU::INTPL(bool lm, u8 sf) -> void {
 }
 
 auto CPU::LWC2(u8 rt, cu32& rs, s16 imm) -> void {
+  if constexpr(Accuracy::CPU::AddressErrors) if((rs + imm) & 3) return (void)read<Word>(rs + imm);
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
   auto data = read<Word>(rs + imm);
   if(exception()) return;
-  setDataRegister(rt, data);
+  queueGTEWrite(false, rt, data);
 }
 
 auto CPU::MFC2(u32& rt, u8 rd) -> void {
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
+  gte.wait(rd == 28 || rd == 29);
   load(rt, getDataRegister(rd));
 }
 
 auto CPU::MTC2(cu32& rt, u8 rd) -> void {
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
-  setDataRegister(rd, rt);
+  queueGTEWrite(false, rd, rt);
 }
 
 auto CPU::MVMVA(bool lm, u8 tv, u8 mv, u8 mm, u8 sf) -> void {
@@ -755,7 +889,9 @@ auto CPU::SQR(bool lm, u8 sf) -> void {
 }
 
 auto CPU::SWC2(u8 rt, cu32& rs, s16 imm) -> void {
+  if constexpr(Accuracy::CPU::AddressErrors) if((rs + imm) & 3) return write<Word>(rs + imm, 0);
   if(!scc.status.enable.coprocessor2) return exception.coprocessor();
+  gte.wait();
   auto data = getDataRegister(rt);
   write<Word>(rs + imm, data);
 }

@@ -494,7 +494,8 @@ Presentation::Presentation() {
   #endif
 }
 
-auto Presentation::resizeWindow() -> void {
+auto Presentation::resizeWindow(bool preservePlacement) -> void {
+  if(preservePlacement && fullScreen()) return;
   if(fullScreen()) setFullScreen(false);
   if(maximized()) return;
 
@@ -559,7 +560,9 @@ auto Presentation::resizeWindow() -> void {
     }
   }
 
-  if(settings.video.autoCentering) {
+  // The first frame can arrive after a debugger pause, after the user has moved the window.
+  // Automatic resolution updates must not replay the explicit window-size centering policy.
+  if(settings.video.autoCentering && !preservePlacement) {
     setGeometry(Alignment::Center, {viewportWidth, viewportHeight + statusHeight});
   } else {
     setSize({viewportWidth, viewportHeight + statusHeight});
@@ -779,20 +782,24 @@ auto Presentation::loadEmulators() -> void {
   //build emulator load list
   u32 enabled = 0;
 
-  //first pass; make sure "Arcade" is start of list
+  //add Arcade emulators directly to root of load menu
   for(auto& emulator : emulators) {
     if(!emulator->configuration.visible) continue;
-    if(emulator->group() == "Arcade") {
-      Menu menu;
-      menu.setIcon(Icon::Emblem::Folder);
-      menu.setText(emulator->group());
-      loadMenu.append(menu);
-      break;
-    }
+    if(emulator->group() != "Arcade") continue;
+    enabled++;
+    MenuItem item;
+    item.setIcon(Icon::Place::Server);
+    item.setText({emulator->name, ELLIPSIS});
+    item.setVisible(emulator->configuration.visible);
+    item.onActivate([=] {
+      program.load(emulator);
+    });
+    loadMenu.append(item);
   }
 
   for(auto& emulator : emulators) {
     if (!emulator->configuration.visible) continue;
+    if(emulator->group() == "Arcade") continue;
     enabled++;
     MenuItem item;
     item.setIcon(Icon::Place::Server);
@@ -818,6 +825,7 @@ auto Presentation::loadEmulators() -> void {
     }
     menu.append(item);
   }
+
   if(enabled == 0) {
     //if the user disables every system, give an indication for how to re-add systems to the load menu
     MenuItem item{&loadMenu};
@@ -873,7 +881,7 @@ auto Presentation::refreshSystemMenu() -> void {
     Menu dipSwitchMenu{&systemMenu};
     dipSwitchMenu.setText("DIP Switches");
     
-    for(auto dip : ares::Node::enumerate<ares::Node::Setting::Boolean>(emulator->root)) {
+    for(auto dip : ares::Node::enumerate<ares::Node::Setting::Boolean>(dipSwitches)) {
       MenuCheckItem item{&dipSwitchMenu};
       item.setText(dip->name());
       item.setAttribute<ares::Node::Setting::Boolean>("dip", dip);
@@ -884,21 +892,23 @@ auto Presentation::refreshSystemMenu() -> void {
       });
     }
 
-    for(auto& dip : ares::Node::enumerate<ares::Node::Setting::String>(emulator->root)) {
+    for(auto& dip : ares::Node::enumerate<ares::Node::Setting::String>(dipSwitches)) {
       Group group;
       Menu item{&dipSwitchMenu};
+      MenuRadioItem selectedOption;
       item.setAttribute<ares::Node::Setting::String>("dip", dip);
       item.setText(dip->name());
       for(auto option : dip->readAllowedValues()) {
         MenuRadioItem optionItem{&item};
         optionItem.setText(option);
         group.append(optionItem);
-        if(dip->value() == option) optionItem.setChecked();
+        if(dip->value() == option) selectedOption = optionItem;
         optionItem.onActivate([=] {
           auto dip = item.attribute<ares::Node::Setting::String>("dip");
           dip->setValue(optionItem.text());
         });
       }
+      if(selectedOption) selectedOption.setChecked();
     }
 
     systemMenu.append(MenuSeparator());
@@ -925,8 +935,10 @@ auto Presentation::refreshSystemMenu() -> void {
       peripheralItem.setText("Nothing");
       if(!port->connected()) peripheralItem.setChecked();
       peripheralItem.onActivate([=, this] {
+        Program::Guard guard;
         auto port = peripheralItem.attribute<ares::Node::Port>("port");
         port->disconnect();
+        if(emulator->setPeripheralConfiguration(port->name(), "Nothing")) settings.save();
         refreshSystemMenu();
       });
       peripheralGroup.append(peripheralItem);
@@ -939,10 +951,12 @@ auto Presentation::refreshSystemMenu() -> void {
       peripheralItem.setAttribute<ares::Node::Port>("port", port);
       peripheralItem.setText(peripheral);
       peripheralItem.onActivate([=, this] {
+        Program::Guard guard;
         auto port = peripheralItem.attribute<ares::Node::Port>("port");
         port->disconnect();
         port->allocate(peripheralItem.text());
         port->connect();
+        if(emulator->setPeripheralConfiguration(port->name(), peripheralItem.text())) settings.save();
         refreshSystemMenu();
       });
       peripheralGroup.append(peripheralItem);

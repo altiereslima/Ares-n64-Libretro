@@ -20,6 +20,9 @@ struct Locale {
   const char* enabled;
   const char* disabled;
   const char* software;
+  const char* region;
+  const char* regionInfo;
+  const char* automatic;
 };
 
 static Locale locales[] = {
@@ -39,6 +42,9 @@ static Locale locales[] = {
     "Ativado",
     "Desativado",
     "Software",
+    "Região",
+    "Automática usa o código de região do cabeçalho da ROM. Force NTSC (60 Hz) ou PAL (50 Hz) para ROMs com cabeçalho alterado, como traduções de jogos japoneses marcadas como PAL. Reinicie o conteúdo após alterar.",
+    "Automática",
   },
   {
     RETRO_LANGUAGE_PORTUGUESE_PORTUGAL,
@@ -56,6 +62,9 @@ static Locale locales[] = {
     "Ativado",
     "Desativado",
     "Software",
+    "Região",
+    "Automática utiliza o código de região do cabeçalho da ROM. Force NTSC (60 Hz) ou PAL (50 Hz) para ROMs com cabeçalho alterado, como traduções de jogos japoneses marcadas como PAL. Reinicie o conteúdo após alterar.",
+    "Automática",
   },
   {
     RETRO_LANGUAGE_SPANISH,
@@ -73,6 +82,9 @@ static Locale locales[] = {
     "Activado",
     "Desactivado",
     "Software",
+    "Región",
+    "Automática usa el código de región de la cabecera de la ROM. Fuerza NTSC (60 Hz) o PAL (50 Hz) para ROMs con la cabecera modificada, como traducciones de juegos japoneses marcadas como PAL. Reinicia el contenido después de cambiarla.",
+    "Automática",
   },
   {
     RETRO_LANGUAGE_FRENCH,
@@ -90,6 +102,9 @@ static Locale locales[] = {
     "Activé",
     "Désactivé",
     "Logiciel",
+    "Région",
+    "Automatique utilise le code de région de l'en-tête de la ROM. Forcez NTSC (60 Hz) ou PAL (50 Hz) pour les ROM dont l'en-tête a été modifié, comme des traductions de jeux japonais marquées PAL. Redémarrez le contenu après modification.",
+    "Automatique",
   },
   {
     RETRO_LANGUAGE_GERMAN,
@@ -107,6 +122,9 @@ static Locale locales[] = {
     "Aktiviert",
     "Deaktiviert",
     "Software",
+    "Region",
+    "Automatisch verwendet den Regionscode aus dem ROM-Header. Erzwinge NTSC (60 Hz) oder PAL (50 Hz) für ROMs mit verändertem Header, etwa als PAL markierte Übersetzungen japanischer Spiele. Inhalt nach einer Änderung neu starten.",
+    "Automatisch",
   },
   {
     RETRO_LANGUAGE_ITALIAN,
@@ -124,6 +142,9 @@ static Locale locales[] = {
     "Abilitato",
     "Disabilitato",
     "Software",
+    "Regione",
+    "Automatica usa il codice regione dell'intestazione della ROM. Forza NTSC (60 Hz) o PAL (50 Hz) per ROM con intestazione modificata, come traduzioni di giochi giapponesi contrassegnate come PAL. Riavvia il contenuto dopo la modifica.",
+    "Automatica",
   },
   {
     RETRO_LANGUAGE_JAPANESE,
@@ -141,6 +162,9 @@ static Locale locales[] = {
     "有効",
     "無効",
     "ソフトウェア",
+    "リージョン",
+    "自動ではROMヘッダーのリージョンコードを使用します。日本のゲームの翻訳版などでヘッダーがPALに変更されている場合は、NTSC（60 Hz）またはPAL（50 Hz）を強制してください。変更後にコンテンツを再起動してください。",
+    "自動",
   },
   {
     RETRO_LANGUAGE_CHINESE_SIMPLIFIED,
@@ -158,6 +182,9 @@ static Locale locales[] = {
     "启用",
     "禁用",
     "软件",
+    "区域",
+    "自动模式使用 ROM 头中的区域代码。对于头信息被修改的 ROM（例如被标记为 PAL 的日版游戏汉化版），可强制使用 NTSC（60 Hz）或 PAL（50 Hz）。更改后请重新启动内容。",
+    "自动",
   },
 };
 
@@ -238,6 +265,21 @@ static retro_core_option_v2_definition englishDefinitions[] = {
     },
     "enabled",
   },
+  {
+    "ares_n64_region",
+    "Region",
+    "Region",
+    "Automatic uses the region code from the ROM header. Force NTSC (60 Hz) or PAL (50 Hz) for ROMs with an altered header, such as translations of Japanese games tagged as PAL. Restart content after changing.",
+    nullptr,
+    "system",
+    {
+      {"auto", "Automatic"},
+      {"NTSC", "NTSC (60 Hz)"},
+      {"PAL", "PAL (50 Hz)"},
+      {nullptr, nullptr},
+    },
+    "auto",
+  },
   {},
 };
 
@@ -247,7 +289,7 @@ static retro_core_options_v2 englishOptions = {
 };
 
 static retro_core_option_v2_category localizedCategories[4] = {};
-static retro_core_option_v2_definition localizedDefinitions[5] = {};
+static retro_core_option_v2_definition localizedDefinitions[6] = {};
 static retro_core_options_v2 localizedOptions = {
   localizedCategories,
   localizedDefinitions,
@@ -323,7 +365,22 @@ inline auto buildLocalizedOptions(const Locale& locale) -> void {
     },
     "enabled",
   };
-  localizedDefinitions[4] = {};
+  localizedDefinitions[4] = {
+    "ares_n64_region",
+    locale.region,
+    locale.region,
+    locale.regionInfo,
+    locale.regionInfo,
+    "system",
+    {
+      {"auto", locale.automatic},
+      {"NTSC", "NTSC (60 Hz)"},
+      {"PAL", "PAL (50 Hz)"},
+      {nullptr, nullptr},
+    },
+    "auto",
+  };
+  localizedDefinitions[5] = {};
 }
 
 inline auto registerOptions(retro_environment_t callback) -> void {
@@ -364,6 +421,10 @@ inline auto registerOptions(retro_environment_t callback) -> void {
     {
       "ares_n64_expansion_pak",
       "Expansion Pak; enabled|disabled"
+    },
+    {
+      "ares_n64_region",
+      "Region; auto|NTSC|PAL"
     },
     {nullptr, nullptr},
   };

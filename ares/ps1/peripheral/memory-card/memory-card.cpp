@@ -31,12 +31,13 @@ auto MemoryCard::reset() -> void {
   _active = false;
 }
 
-auto MemoryCard::acknowledge() -> bool {
-  return state != State::Idle;
+auto MemoryCard::acknowledge() -> u32 {
+  if(state == State::Idle) return 0;
+  return system.frequency() * 12 / 1'000'000 + (command == Command::Read && phase == 7 ? 31'000 : 0);
 }
 
 auto MemoryCard::active() -> bool {
-  return _active || acknowledge();
+  return _active || state != State::Idle;
 }
 
 
@@ -99,11 +100,17 @@ auto MemoryCard::read(u8 data) -> u8 {
   case   2: return 0x5a;  //ID lower
   case   3: return 0x5d;  //ID upper
   case   4: address = address & 0x00ff | input << 8; return 0;
-  case   5: address = address & 0xff00 | input << 0; return 0;
+  case   5:
+    address = address & 0xff00 | input << 0;
+    if(address >= 1024) address = 0xffff;
+    return 0;
   case   6: return 0x5c;  //ACK lower
   case   7: return 0x5d;  //ACK upper
   case   8: checksum  = address >> 8; return address >> 8;
-  case   9: checksum ^= address >> 0; return address >> 0;
+  case   9:
+    checksum ^= address >> 0;
+    if(address == 0xffff) { state = State::Idle; command = Command::None; }
+    return address >> 0;
   case range128(10, 137):
     output = memory.readByte(address * 128 + (phase - 11));
     checksum ^= output;

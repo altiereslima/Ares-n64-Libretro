@@ -111,6 +111,7 @@ auto CPU::setControlRegisterSCC(u8 index, u32 value) -> void {
     break;
 
   case  7:  //Breakpoint Control
+    if(!breakpoint.active && data.bit(23)) breakpoint.lastPC = pipeline.address;
     scc.breakpoint.status.any           = data.bit( 0);
     scc.breakpoint.status.code          = data.bit( 1);
     scc.breakpoint.status.data          = data.bit( 2);
@@ -130,6 +131,7 @@ auto CPU::setControlRegisterSCC(u8 index, u32 value) -> void {
     scc.breakpoint.enable.kernel        = data.bit(29);
     scc.breakpoint.enable.user          = data.bit(30);
     scc.breakpoint.enable.trap          = data.bit(31);
+    breakpoint.active = scc.breakpoint.enable.master;
     break;
 
   case  8:  //Bad Virtual Address
@@ -157,10 +159,8 @@ auto CPU::setControlRegisterSCC(u8 index, u32 value) -> void {
     scc.status.cache.swap               = data.bit(17);
     scc.status.cache.parityZero         = data.bit(18);
     scc.status.cache.loadWasData        = data.bit(19);
-    scc.status.cache.parityError        = data.bit(20);
   //scc.status.tlbShutdown              = data.bit(21);  //read-only
     scc.status.vectorLocation           = data.bit(22);
-    scc.status.reverseEndian            = data.bit(25);
     scc.status.enable.coprocessor0      = data.bit(28);
     scc.status.enable.coprocessor1      = data.bit(29);
     scc.status.enable.coprocessor2      = data.bit(30);
@@ -189,12 +189,17 @@ auto CPU::setControlRegisterSCC(u8 index, u32 value) -> void {
   }
 }
 
+static auto sccRegisterMissing(u8 index) -> bool {
+  return index <= 2 || index == 4 || index == 10;
+}
+
 auto CPU::MFC0(u32& rt, u8 rd) -> void {
-  if(&rt == &ipu.r[0]) return exception.reservedInstruction();
+  if(sccRegisterMissing(rd)) return exception.reservedInstruction();
   load(rt, getControlRegisterSCC(rd));
 }
 
 auto CPU::MTC0(cu32& rt, u8 rd) -> void {
+  if(sccRegisterMissing(rd)) return exception.reservedInstruction();
   setControlRegisterSCC(rd, rt);
 }
 

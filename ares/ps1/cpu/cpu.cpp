@@ -1,10 +1,12 @@
 #include <ps1/ps1.hpp>
-#include <map>
+#include <bit>
+#include <array>
 
 namespace ares::PlayStation {
 
 CPU cpu;
 #include "delay-slots.cpp"
+#include "write-queue.cpp"
 #include "memory.cpp"
 #include "icache.cpp"
 #include "exceptions.cpp"
@@ -32,126 +34,273 @@ auto CPU::unload() -> void {
   node.reset();
 }
 
-auto CPU::main() -> void {
-  //we need to return periodically to allow save states/exit/etc to function
-  //re-entering has high function call overhead; but we can batch instructions
-  while (true) {
-    instruction();
-    if(ipu.pb + 4 != ipu.pc) {
-       if(accruedCycles >= branchCooldownCycles) {
-        synchronize();
-        break;
-      }
-    }
-  }
-}
-
-auto CPU::step(u32 clocks) -> void {
-  if(clocks == 0) return;
-
-  accruedCycles += clocks;
-
-  if(cyclesUntilForcedSync <= 0) {
-    cyclesUntilForcedSync = forceSyncInterval;
-  }
-
-  cyclesUntilForcedSync -= (s32)clocks;
-
-  if(cyclesUntilForcedSync > 0) return;
-  synchronize();
-}
-
-auto CPU::synchronize() -> void {
-  if(accruedCycles == 0) return;
-  timer.step(accruedCycles);
-  disc.step(accruedCycles);
-  peripheral.step(accruedCycles);
-  Thread::step(accruedCycles);
-  Thread::synchronize();
-
-  accruedCycles = 0;
-  cyclesUntilForcedSync = 0;
-}
-
-auto CPU::ioSynchronize() -> void {
-  if(accruedCycles >= ioCooldownCycles) synchronize();
-}
-
-auto CPU::waitDMA() -> void {
-  while(dma.active()) step(16);
-}
-
-auto CPU::instruction() -> void {
-  if constexpr(Accuracy::CPU::Breakpoints) {
-    if(unlikely(breakpoint.testCode(ipu.pc))) {
-        return (void)instructionEpilogue();
-    }
-  }
-
-  if constexpr(Accuracy::CPU::AddressErrors) {
-    if(unlikely(ipu.pc & 3)) {
-      exception.address<Read>(ipu.pc);
-        return (void)instructionEpilogue();
-    }
-  }
-
-  u32 instruction = fetch(ipu.pc);
-  if(exception()) return (void)instructionEpilogue();
-
-  instructionPrologue(instruction);
-  decoderEXECUTE();
-  instructionEpilogue();
-}
-
-auto CPU::instructionPrologue(u32 instruction) -> void {
+alwaysinline auto CPU::instructionPrologue(u32 instruction) -> void {
   pipeline.address = ipu.pc;
   pipeline.instruction = instruction;
-  debugger.instruction();
+  u32 opcode = instruction >> 26;
+  if(opcode >= 0x20 && opcode <= 0x26 && (instruction >> 16 & 31) == readTarget) readTarget = 0;
+  if(unlikely((ipu.pc & 0x1fff'ffef) == 0xa0)) {
+    if(unlikely(debugger.tracer.message->enabled())) debugger.message();
+  }
+  if(unlikely(debugger.tracer.instruction->enabled())) debugger.instruction();
 }
 
-auto CPU::instructionEpilogue() -> void {
+alwaysinline auto CPU::instructionEpilogue() -> void {
+  gte.latch.slots += gte.latch.active;
   ipu.pb = ipu.pc;
   ipu.pc = ipu.pd;
   ipu.pd = ipu.pd + 4;
 
-  processDelayLoad();
-  processDelayBranch();
-  ipu.r[0] = 0;  //it's faster to allow assigning to r0 and then clearing it later
+  if(unlikely(delay.loadPending | delay.branchPending)) {
+    if(delay.loadPending) processDelayLoad();
+    if(delay.branchPending) processDelayBranch();
+  }
+  if(unlikely(gtePending.count)) processGTEWrites();
+  ipu.r[0] = 0;
 
-  if(auto interrupts = exception.interruptsPending()) {
+  if(unlikely(exception.interruptsPending())) {
     debugger.interrupt(scc.cause.interruptPending);
     exception.interrupt();
   }
-  exception.triggered = 0;
+  if(unlikely(exception.triggered)) exception.triggered = 0;
+}
 
-  //When a branch is detected, check if we need to hook a  bios call
-  if(ipu.pb + 4 != ipu.pc) {
-    debugger.message();
-    debugger.function();
+static constexpr auto controlFlowClass = []() {
+  std::array<u8, 64> t{};
+  for(u32 o = 1; o <= 7; o++) t[o] = 1;
+  t[0x00] = 2;
+  t[0x10] = 3;
+  t[0x12] = 3;
+  return t;
+}();
+
+alwaysinline auto CPU::fetchAhead(u32 address, PrefetchedInstruction& slot) -> void {
+  if(likely(!(address & 3) && (address & 0x7fff'ffff) <= memory.ramLimit)) {
+    slot.address = address;
+    slot.instruction = fetch(address);
+    return;
+  }
+  u32 physical = address & 0x1fff'ffff;
+  if((address & 3) || (address >> 29 != 0 && address >> 29 != 4 && address >> 29 != 5)
+  || (physical > memory.ramLimit && physical < 0x1fc0'0000)) {
+    slot = {};
+    return;
+  }
+  slot.address = address;
+  slot.instruction = fetch(address);
+}
+
+auto CPU::queueGTEWrite(bool control, u8 reg, u32 data) -> void {
+  gte.latchWrite(control, reg, data);
+  if(!gte.remaining && !gtePending.count) {
+    if(control) gte.setControlRegister(reg, data);
+    else gte.setDataRegister(reg, data);
+    return;
+  }
+  if(gtePending.count == 3) {
+    auto& oldest = gtePending.entry[0];
+    if(oldest.control) gte.setControlRegister(oldest.reg, oldest.data);
+    else gte.setDataRegister(oldest.reg, oldest.data);
+    for(u32 n = 1; n < 3; n++) gtePending.entry[n - 1] = gtePending.entry[n];
+    gtePending.count--;
+  }
+  gtePending.entry[gtePending.count++] = {u8(control), reg, 3, data};
+}
+
+auto CPU::processGTEWrites() -> void {
+  u32 kept = 0;
+  for(u32 n = 0; n < gtePending.count; n++) {
+    auto entry = gtePending.entry[n];
+    if(--entry.timer == 0) {
+      if(entry.control) gte.setControlRegister(entry.reg, entry.data);
+      else gte.setDataRegister(entry.reg, entry.data);
+    } else {
+      gtePending.entry[kept++] = entry;
+    }
+  }
+  gtePending.count = kept;
+}
+
+auto CPU::flushGTEWrites() -> void {
+  for(u32 n = 0; n < gtePending.count; n++) {
+    auto& entry = gtePending.entry[n];
+    if(entry.control) gte.setControlRegister(entry.reg, entry.data);
+    else gte.setDataRegister(entry.reg, entry.data);
+  }
+  gtePending.count = 0;
+}
+
+auto CPU::main() -> void {
+  //we need to return periodically to allow save states/exit/etc to function
+  //re-entering has high function call overhead; but we can batch instructions
+  while(true) {
+    if constexpr(Accuracy::CPU::Breakpoints) {
+      if(unlikely(breakpoint.active) && unlikely(breakpoint.testCode(ipu.pc))) {
+        return (void)instructionEpilogue();
+      }
+    }
+
+    if constexpr(Accuracy::CPU::AddressErrors) {
+      if(unlikely(ipu.pc & 3)) {
+        exception.address<Read>(ipu.pc);
+        return (void)instructionEpilogue();
+      }
+    }
+
+    u32 instruction;
+    if(prefetched[0].address == ipu.pc) instruction = prefetched[0].instruction;
+    else {
+      prefetched[0] = prefetched[1] = {};
+      instruction = fetch(ipu.pc);
+    }
+    if(unlikely(exception())) return (void)instructionEpilogue();
+    if(unlikely(readRemaining)) {
+      u32 opcode = instruction >> 26;
+      if((opcode >= 0x20 && opcode <= 0x26) || (opcode >= 0x30 && opcode <= 0x33)) {
+        readHold = 0;
+        if(onDieHalf && opcode == 0x23 && readRemaining > 1 && bus.isOnDie(ipu.r[instruction >> 21 & 31] + (s16)instruction)) readRemaining--;
+        onDieHalf = false;
+        step(readRemaining);
+      }
+    }
+    if(unlikely((readLatency | readWritebackRemaining) && readTarget)) readInterlock(instruction);
+    instructionPrologue(instruction);
+    u32 opcode = instruction >> 26;
+    u32 flowClass = controlFlowClass[opcode];
+    bool controlFlow = flowClass == 1
+                    || (flowClass == 2 && ((0x300ull >> (instruction & 63)) & 1))
+                    || (flowClass == 3 && (instruction >> 21 & 31) == 8);
+    if(likely(!controlFlow)) {
+      if(prefetched[1].address == ipu.pd) prefetched[0] = prefetched[1];
+      else fetchAhead(ipu.pd, prefetched[0]);
+      fetchAhead(ipu.pd + 4, prefetched[1]);
+      if(unlikely(exception())) return (void)instructionEpilogue();
+    }
+    decoderEXECUTE();
+    if(unlikely(controlFlow)) {
+      if(unlikely(exception())) return (void)instructionEpilogue();
+      if(prefetched[1].address == ipu.pd) prefetched[0] = prefetched[1];
+      else fetchAhead(ipu.pd, prefetched[0]);
+      fetchAhead(delay.branch[1].take ? (u32)delay.branch[1].address : ipu.pd + 4, prefetched[1]);
+      if(unlikely(exception())) return (void)instructionEpilogue();
+    }
+    instructionEpilogue();
+
+    if(unlikely(++instructionsSinceYield >= 512)) {
+      instructionsSinceYield = 0;
+      synchronize();
+      break;
+    }
   }
 }
 
-auto CPU::instructionHook() -> void {
-  //fast-boot or executable side-loading
-  if(ipu.pd == 0x8003'0000 && !exeLoaded) {
-    exeLoaded = 1;
-    if(!disc.cd || disc.audioCD()) {
-      //todo: is it possible to fast boot into the BIOS menu here?
-    } else if(exe.size > 0) {
-        u32 pc     = exe.readWord(0x10);
-        u32 gp     = exe.readWord(0x14);
-        u32 target = exe.readWord(0x18) & ram.size - 1;
-        u32 source = 2048;
+auto CPU::stepSlow(u32 clocks) -> void {
+  if(clocks == 0) return;
 
-        ipu.pd = pc;
-        ipu.r[28] = gp;
-        for(u32 address : range(exe.size - source)) {
-          ram.writeByte(target + address, exe.readByte(source + address));
-        }
-    } else if(system.fastBoot->value()) {
-      ipu.pd = ipu.r[31];
+  if(cyclesUntilForcedSync <= 0) resetNextEvent();
+
+  while(clocks > 0) {
+    u32 stepClocks = clocks;
+    if(readRemaining) stepClocks = min(stepClocks, readHold ? readHold : readRemaining);
+    stepClocks = min<u32>(stepClocks, cyclesUntilForcedSync);
+    if(writeQueue.count | writeQueue.remaining) stepClocks = writeQueueWindow(stepClocks);
+
+    mulDivRemaining -= min(mulDivRemaining, stepClocks);
+    recoveryWait -= min(recoveryWait, stepClocks);
+    gte.remaining -= min(gte.remaining, stepClocks);
+    if(unlikely(gte.lzcrDelay)) { if(stepClocks >= gte.lzcrDelay) { gte.lzcr = gte.lzcrNext; gte.lzcrDelay = 0; } else gte.lzcrDelay -= stepClocks; }
+    readLatency -= min(readLatency, stepClocks);
+    readWritebackRemaining -= min(readWritebackRemaining, stepClocks);
+    accruedCycles += stepClocks;
+    clocks -= stepClocks;
+    cyclesUntilForcedSync -= stepClocks;
+
+    if(writeQueue.remaining) writeQueueAdvance(stepClocks);
+    if(readRemaining) {
+      if(readHold) {
+        readHold -= stepClocks;
+      } else {
+        readRemaining -= stepClocks;
+        if(!readRemaining) busAccess = false;
+      }
     }
+    if(writeQueue.stalled || cyclesUntilForcedSync <= 0) synchronize();
   }
+}
+
+auto CPU::synchronize() -> void {
+  if(accruedCycles == 0) return;
+  resetNextEvent();
+  timer.step(accruedCycles - timerStepped);
+  timerStepped = 0;
+  disc.step(accruedCycles);
+  peripheral.step(accruedCycles);
+  if(u32 clocks = disc.nextEvent()) setNextEvent(clocks);
+  if(u32 clocks = peripheral.nextEvent()) setNextEvent(clocks);
+  if(unlikely(expansion.connected())) expansion.step(accruedCycles);
+  Thread::step(accruedCycles);
+  accruedCycles = 0;
+  Thread::synchronize();
+}
+
+auto CPU::resetNextEvent() -> void {
+  cyclesUntilForcedSync = gpu.pixelAccuracySetting->value() ? forceSyncInterval : relaxedSyncInterval;
+}
+
+auto CPU::setNextEvent(u32 clocks) -> void {
+  if(cyclesUntilForcedSync <= 0) resetNextEvent();
+  cyclesUntilForcedSync = min<s32>(cyclesUntilForcedSync, (s32)max<u32>(1, clocks));
+}
+
+auto CPU::ioSynchronize(u32 address) -> void {
+  if(address >= 0x1f80'1120 && address <= 0x1f80'112f) {
+    if(accruedCycles != timerStepped) {
+      timer.step(accruedCycles - timerStepped, false);
+      timerStepped = accruedCycles;
+    }
+    return;
+  }
+  if(address >= 0x1f80'1070 && address <= 0x1f80'1077) {
+    u64 now = clock() + (u64)accruedCycles * scalar();
+    bool dmaIdle = dma.enabledMask == 0 && !dma.active();
+    bool mdecIdle = mdec.io.mode == MDEC::Idle && mdec.fifo.input.empty() && mdec.fifo.pendingOutput.empty();
+    if(dmaIdle && mdecIdle && spu.clock() >= now && gpu.canLag(now)) return;
+  }
+  synchronize();
+}
+
+auto CPU::dmaStallSlices(u32 slice) -> u32 {
+  if(readRemaining || cyclesUntilForcedSync <= (s32)slice * 2 || timer.sysclockGated()) return 1;
+  u64 now = clock() + (u64)accruedCycles * scalar();
+  if(dma.clock() < now) return 1;
+  u64 slices = (dma.clock() - now) / ((u64)slice * scalar());
+  return max<u64>(1, min<u64>(slices, ((u64)cyclesUntilForcedSync - 1) / slice));
+}
+
+auto CPU::waitDMA() -> void {
+  while(dma.active()) {
+    u32 slice = min<u32>(dmaStallGranularity, dma.cpuReleaseWindow());
+    u32 clocks = slice * dmaStallSlices(slice);
+    if(clocks > slice && (writeQueue.count | writeQueue.remaining)) {
+      if(!busAccess) writeQueue.page = ~0u;
+      writeQueue.stalled = !busAccess;
+      advance(clocks);
+    } else {
+      step(clocks);
+    }
+    synchronize();
+  }
+}
+
+auto CPU::idle(u32 clocks) -> void {
+    while(writeQueue.count | writeQueue.remaining) {
+    step(writeQueue.remaining ? writeQueue.remaining : 1);
+  }
+  if(clocks == 0) {
+    clocks = cyclesUntilForcedSync > 0 ? (u32)cyclesUntilForcedSync : (u32)(gpu.pixelAccuracySetting->value() ? forceSyncInterval : relaxedSyncInterval);
+  }
+  step(clocks);
+  synchronize();
 }
 
 auto CPU::power(bool reset) -> void {
@@ -159,15 +308,32 @@ auto CPU::power(bool reset) -> void {
   random.array({ram.data, ram.size});
   random.array({scratchpad.data, scratchpad.size});
 
+  gtePending.count = 0;
+  gte.latch.active = false;
+  gte.lzcrDelay = 0;
   accruedCycles = 0;
-  cyclesUntilForcedSync = 0;
+  timerStepped = 0;
+  resetNextEvent();
+  instructionsSinceYield = 0;
+  mulDivRemaining = 0;
+  gte.remaining = 0;
+  gte.command = 0;
+  writeQueue = {};
+  busAccess = false;
+  recoveryWait = 0;
+  onDieHalf = false;
+  recoveryPort = 0;
+  busTransactionClocks = readRemaining = readHold = readLatency = readWritebackRemaining = readTarget = 0;
+  ioPoll = {};
 
   pipeline = {};
+  prefetched[0] = prefetched[1] = {};
   delay = {};
   icache.power(reset);
-  exeLoaded = 0;
+  fastBooted = 0;
   exception.triggered = 0;
   breakpoint.lastPC = 0;
+  breakpoint.active = false;
   for(auto& r : ipu.r) r = 0;
   ipu.lo = 0;
   ipu.hi = 0;

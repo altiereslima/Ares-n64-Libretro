@@ -1,30 +1,30 @@
-auto SPU::Envelope::reset(u8 rate, bool decreasing, bool exponential) -> void {
+auto SPU::Envelope::reset(u8 rate, bool decreasing, bool exponential, u8 rateMask) -> void {
   this->rate = rate;
   this->decreasing = decreasing;
   this->exponential = exponential;
-  auto& entry = spu.adsrEntries[decreasing][rate];
-  this->counter = entry.ticks;
+  counter = rate >= 48 && (rate & rateMask) == rateMask ? -1 : 0;
 }
 
 auto SPU::Envelope::tick(s32 level) -> s16 {
-  if(--counter > 0) return level;
+  if(counter < 0) return level;
   auto& entry = spu.adsrEntries[decreasing][rate];
-  counter = entry.ticks;
+  s32 increment = entry.increment;
   s32 step = entry.step;
   if(exponential) {
     if(decreasing) {
       step = amplify(step, level);
-    } else if(level >= 0x6000) {
+    } else if(level > 0x6000) {
       if(rate < 40) {
         step >>= 2;
       } else if(rate >= 44) {
-        counter >>= 2;
+        increment >>= 2;
       } else {
         step >>= 1;
-        counter >>= 1;
+        increment >>= 1;
       }
     }
   }
+  if(increment < 0x8000 && (spu.envelopeClock & (0x8000 / max(1, increment) - 1))) return level;
   level += step;
   if(level < 0x0000) level = 0x0000;
   if(level > 0x7fff) level = 0x7fff;
@@ -36,14 +36,31 @@ auto SPU::VolumeSweep::reset() -> void {
     active = 0;
     current = level << 1;
   } else {
-    active = 1;
     Envelope::reset(rate, decreasing, exponential);
+    active = counter >= 0;
   }
 }
 
 auto SPU::VolumeSweep::tick() -> void {
-  if(active) {
-    current = Envelope::tick(current);
-    active = decreasing ? current > 0x0000 : current < 0x7fff;
+  if(!active) return;
+  bool subtract = exponential && decreasing ? true : bool(decreasing ^ negative);
+  auto& entry = spu.adsrEntries[subtract][rate];
+  s32 increment = entry.increment;
+  s32 step = entry.step;
+  if(exponential) {
+    if(decreasing) {
+      step = amplify(step, current);
+    } else if(current > 0x6000) {
+      if(rate < 40) step >>= 2;
+      else if(rate >= 44) increment >>= 2;
+      else { step >>= 1; increment >>= 1; }
+    }
   }
+  if(increment < 0x8000 && (spu.envelopeClock & (0x8000 / max(1, increment) - 1))) return;
+  s32 next = current + step;
+  if(!decreasing) next = sclamp<16>(next);
+  else if(negative) next = min(0, max(-0x8000, next));
+  else next = max(0, next);
+  current = next;
+  active = decreasing ? current != 0 : current != (negative ? -0x8000 : 0x7fff);
 }

@@ -33,8 +33,14 @@ struct CPU : Thread {
   auto load(Node::Object) -> void;
   auto unload() -> void;
 
+  static constexpr u64 CountMask = (1ull << 33) - 1;
+
   auto main() -> void;
   auto synchronize() -> void;
+  auto stepCount(u64 clocks) -> void;
+  auto flushCount() -> void;
+  auto pendingCount() const -> u64 { return (Thread::clock - countClock) >> 1; }
+  auto effectiveCount() const -> u64 { return (scc.count + pendingCount()) & CountMask; }
   auto forceSynchronize() -> void;
   auto setInterruptPending(u32 bit, bool value) -> void;
   auto interruptPoll() -> void;
@@ -1115,7 +1121,7 @@ struct CPU : Thread {
     }
 
     auto isRdramAddress(u32 address) const -> bool {
-      return address < RdramSize;
+      return address < rdram.ram.size;
     }
 
     auto rdramAddress(u32 address) const -> u32 {
@@ -1245,6 +1251,7 @@ struct CPU : Thread {
     std::vector<u8> sectionDirty;
   } recompiler{*this};
   s64 jitClockTarget = 0;
+  s64 countClock = 0;
 
   struct Disassembler {
     CPU& self;

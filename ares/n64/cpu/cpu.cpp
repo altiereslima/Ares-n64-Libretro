@@ -65,9 +65,26 @@ auto CPU::forceSynchronize() -> void {
   jitClockTarget = 0;
 }
 
+auto CPU::stepCount(u64 clocks) -> void {
+  if(!clocks) return;
+  u64 remaining = (u64)(scc.compare - scc.count) & CountMask;
+  if(remaining && clocks >= remaining) setInterruptPending(Interrupt::Timer, 1);
+  scc.count += clocks;
+  profile.cpuCycles += clocks;
+  if(scc.status.exceptionLevel) profile.cpuCyclesExc += clocks;
+}
+
+auto CPU::flushCount() -> void {
+  auto clocks = pendingCount();
+  countClock += clocks << 1;
+  stepCount(clocks);
+}
+
 auto CPU::synchronize() -> void {
   auto clocks = Thread::clock;
+  auto counted = countClock;
   Thread::clock = 0;
+  countClock = 0;
   jitClockTarget = 0;
 
    vi.clock -= clocks;
@@ -100,13 +117,7 @@ auto CPU::synchronize() -> void {
     }
   });
 
-  clocks >>= 1;
-  if(scc.count < scc.compare && scc.count + clocks >= scc.compare) {
-    setInterruptPending(Interrupt::Timer, 1);
-  }
-  scc.count += clocks;
-  profile.cpuCycles += clocks;
-  if (scc.status.exceptionLevel) profile.cpuCyclesExc += clocks;
+  stepCount((clocks - counted) >> 1);
 }
 
 auto CPU::setInterruptPending(u32 bit, bool value) -> void {
@@ -151,8 +162,12 @@ auto CPU::instruction() -> bool {
     auto block = recompiler.block(ipu.pc, access.paddr);
     if(block) {
       if(Thread::clock >= jitClockTarget) {
-        s64 timerDelta = (s64)scc.compare - (s64)scc.count;
-        if(timerDelta < 0) timerDelta = 0;
+        //COUNT/COMPARE wrap around (see stepCount): once COUNT has passed COMPARE
+        //the next timer interrupt only fires after COUNT wraps. Clamping the raw
+        //difference to zero instead shrank the JIT budget to nothing and forced a
+        //full hardware synchronization after every recompiled block.
+        u64 timerRemaining = ((u64)scc.compare - effectiveCount()) & CountMask;
+        s64 timerDelta = timerRemaining ? (s64)timerRemaining : (s64)CountMask + 1;
         s64 queueDelta = queue.timeToNextEvent();
         if(queueDelta < 0) queueDelta = 0;
         s64 capBudget = min<s64>(Accuracy::CPU::JitInterleaving, min(timerDelta, queueDelta));

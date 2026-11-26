@@ -9,6 +9,7 @@
 #include <component/audio/ym2413/ym2413.hpp>
 #include <component/eeprom/m24c/m24c.hpp>
 #include <component/flash/sst39sf0x0/sst39sf0x0.hpp>
+#include <component/arcade/dip-switches.hpp>
 #include "ymfm_opn.h"
 
 namespace ares::Famicom {
@@ -25,6 +26,7 @@ namespace ares::Famicom {
 
   #include <fc/controller/controller.hpp>
   #include <fc/expansion/expansion.hpp>
+  #include <fc/vs/unisystem.hpp>
   #include <fc/system/system.hpp>
   #include <fc/cartridge/cartridge.hpp>
   #include <fc/cpu/cpu.hpp>

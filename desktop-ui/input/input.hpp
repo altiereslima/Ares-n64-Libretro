@@ -1,6 +1,11 @@
+#include <nall/vector-helpers.hpp>
+
 enum : u32 { BindingLimit = 3 };
 
 enum class MappingMode : u32 { Direct, VirtualPad };
+enum class DigitalAxisMode : u32 { Immediate, GradualReturn, GradualHold };
+
+auto digitalAxisMode(const string& name) -> DigitalAxisMode;
 
 struct InputMapping {
   enum class Qualifier : u32 { None, Lo, Hi, Rumble };
@@ -9,7 +14,24 @@ struct InputMapping {
   auto bind(u32 binding, string assignment) -> void;
   auto unbind() -> void;
   auto unbind(u32 binding) -> void;
-  auto assigned() -> bool;
+  auto assigned() -> bool {
+    for(auto& assignment : assignments) {
+      if(assignment) return true;
+    }
+    return false;
+  }
+
+  auto assignmentString() -> string {
+    string value;
+    for(auto& assignment : assignments) value.append(assignment, ";");
+    return value.trimRight(";", 1L);
+  }
+
+  auto setAssignments(const string& value) -> void {
+    auto parts = nall::split(value, ";");
+    parts.resize(BindingLimit);
+    for(u32 binding = 0; binding < BindingLimit; binding++) assignments[binding] = parts[binding];
+  }
 
   virtual auto bind(u32 binding, std::shared_ptr<HID::Device>, u32 groupID, u32 inputID, s16 oldValue, s16 newValue) -> bool = 0;
   virtual auto value() -> s16 = 0;
@@ -45,6 +67,16 @@ struct InputAnalog : InputMapping {
   auto bind(u32 binding, std::shared_ptr<HID::Device>, u32 groupID, u32 inputID, s16 oldValue, s16 newValue) -> bool override;
   auto value() -> s16 override;
   auto pressed() -> bool override;
+
+private:
+  struct Sample {
+    s16 value = 0;
+    bool digital = false;
+    bool pressed = false;
+  };
+
+  auto sample() -> Sample;
+  friend struct InputPair;
 };
 
 //-32768 ... +32767
@@ -58,7 +90,11 @@ struct InputAbsolute : InputMapping {
 struct InputRelative : InputMapping {
   using InputMapping::bind;
   auto bind(u32 binding, std::shared_ptr<HID::Device>, u32 groupID, u32 inputID, s16 oldValue, s16 newValue) -> bool override;
+  auto synchronize() -> void;
   auto value() -> s16 override;
+
+private:
+  s64 previous[BindingLimit] = {};
 };
 
 //specifies a target joypad for force feedback
@@ -90,6 +126,8 @@ struct InputNode {
   string name;
   InputMapping* mapping;
   std::shared_ptr<InputMapping> directMapping;
+  std::vector<std::shared_ptr<InputMapping>> inheritedMappings;
+  string label;
 
   auto configuredMapping() -> InputMapping& {
     if(directMapping) return *directMapping;
@@ -98,11 +136,14 @@ struct InputNode {
 
   auto effectiveMapping() -> InputMapping& {
     if(directMapping && directMapping->assigned()) return *directMapping;
+    for(auto& inherited : inheritedMappings) {
+      if(inherited->assigned()) return *inherited;
+    }
     return *mapping;
   }
 
   auto inheritedMapping() -> bool {
-    return directMapping && !directMapping->assigned() && mapping->assigned();
+    return &effectiveMapping() != &configuredMapping();
   }
 
   auto setMappingMode(MappingMode mode) -> void {
@@ -120,44 +161,64 @@ struct InputNode {
 };
 
 struct InputPair {
-  enum class Type : u32 { Analog };
-  Type type;
-  string name;
-  InputMapping* mappingLo;
-  InputMapping* mappingHi;
-  std::shared_ptr<InputMapping> directMappingLo;
-  std::shared_ptr<InputMapping> directMappingHi;
+  InputPair(string name, InputAnalog& mappingLo, InputAnalog& mappingHi)
+  : name(name), mappingLo(&mappingLo), mappingHi(&mappingHi) {}
 
-  auto configuredMappingLo() -> InputMapping& {
+  string name;
+  InputAnalog* mappingLo;
+  InputAnalog* mappingHi;
+  std::shared_ptr<InputAnalog> directMappingLo;
+  std::shared_ptr<InputAnalog> directMappingHi;
+  std::vector<std::shared_ptr<InputAnalog>> inheritedMappingsLo, inheritedMappingsHi;
+
+  auto configuredMappingLo() -> InputAnalog& {
     if(directMappingLo) return *directMappingLo;
     return *mappingLo;
   }
 
-  auto configuredMappingHi() -> InputMapping& {
+  auto configuredMappingHi() -> InputAnalog& {
     if(directMappingHi) return *directMappingHi;
     return *mappingHi;
   }
 
-  auto effectiveMappingLo() -> InputMapping& {
+  auto effectiveMappingLo() -> InputAnalog& {
     if(directMappingLo && directMappingLo->assigned()) return *directMappingLo;
+    for(auto& inherited : inheritedMappingsLo) {
+      if(inherited->assigned()) return *inherited;
+    }
     return *mappingLo;
   }
 
-  auto effectiveMappingHi() -> InputMapping& {
+  auto effectiveMappingHi() -> InputAnalog& {
     if(directMappingHi && directMappingHi->assigned()) return *directMappingHi;
+    for(auto& inherited : inheritedMappingsHi) {
+      if(inherited->assigned()) return *inherited;
+    }
     return *mappingHi;
   }
+
+  auto value() -> s16;
 
   auto setMappingMode(MappingMode mode) -> void {
     mappingMode = mode;
     if(mode != MappingMode::VirtualPad) return;
-    if(type == Type::Analog) {
-      if(!directMappingLo) directMappingLo = std::make_shared<InputAnalog>();
-      if(!directMappingHi) directMappingHi = std::make_shared<InputAnalog>();
-    }
+    if(!directMappingLo) directMappingLo = std::make_shared<InputAnalog>();
+    if(!directMappingHi) directMappingHi = std::make_shared<InputAnalog>();
   }
 
   MappingMode mappingMode = MappingMode::VirtualPad;
+
+private:
+  auto clockDigital(DigitalAxisMode mode, bool assigned, s32 direction, u64 currentTime) -> s16;
+  auto moveDigital(s32 target, u64 currentTime) -> s16;
+  auto resetDigital(DigitalAxisMode mode, u64 currentTime) -> void;
+
+  struct Digital {
+    DigitalAxisMode mode = DigitalAxisMode::Immediate;
+    s32 position = 0;
+    u32 remainder = 0;
+    u64 timestamp = 0;
+  } digital;
 };
 
 struct InputDevice {
@@ -191,12 +252,16 @@ struct InputDevice {
     if(mappingModeConfigured) inputs.back().setMappingMode(mappingMode);
   }
 
-  auto analog(string name, InputMapping& mappingLo, InputMapping& mappingHi) -> void {
-    pairs.push_back({InputPair::Type::Analog, name, &mappingLo, &mappingHi});
+  auto analog(string name, InputAnalog& mappingLo, InputAnalog& mappingHi) -> void {
+    pairs.emplace_back(name, mappingLo, mappingHi);
     if(mappingModeConfigured) pairs.back().setMappingMode(mappingMode);
     for(auto& input : inputs) {
-      if(input.mapping == &mappingLo && input.directMapping) pairs.back().directMappingLo = input.directMapping;
-      if(input.mapping == &mappingHi && input.directMapping) pairs.back().directMappingHi = input.directMapping;
+      if(input.mapping == &mappingLo && input.directMapping) {
+        pairs.back().directMappingLo = std::static_pointer_cast<InputAnalog>(input.directMapping);
+      }
+      if(input.mapping == &mappingHi && input.directMapping) {
+        pairs.back().directMappingHi = std::static_pointer_cast<InputAnalog>(input.directMapping);
+      }
     }
   }
 
@@ -205,6 +270,36 @@ struct InputDevice {
     mappingMode = mode;
     for(auto& input : inputs) input.setMappingMode(mode);
     for(auto& pair : pairs) pair.setMappingMode(mode);
+  }
+
+  //Create independent overrides while sharing the parent defaults.
+  auto inheritMappings(const InputDevice& parent) -> void {
+    mappingMode = MappingMode::VirtualPad;
+    mappingModeConfigured = true;
+    for(u32 index = 0; index < inputs.size(); index++) {
+      auto& input = inputs[index];
+      auto& source = parent.inputs[index];
+      input.inheritedMappings = source.inheritedMappings;
+      if(source.directMapping) input.inheritedMappings.insert(input.inheritedMappings.begin(), source.directMapping);
+      input.directMapping.reset();
+      input.setMappingMode(MappingMode::VirtualPad);
+    }
+    for(u32 index = 0; index < pairs.size(); index++) {
+      auto& pair = pairs[index];
+      auto& source = parent.pairs[index];
+      pair.inheritedMappingsLo = source.inheritedMappingsLo;
+      pair.inheritedMappingsHi = source.inheritedMappingsHi;
+      if(source.directMappingLo) pair.inheritedMappingsLo.insert(pair.inheritedMappingsLo.begin(), source.directMappingLo);
+      if(source.directMappingHi) pair.inheritedMappingsHi.insert(pair.inheritedMappingsHi.begin(), source.directMappingHi);
+      pair.directMappingLo = std::make_shared<InputAnalog>();
+      pair.directMappingHi = std::make_shared<InputAnalog>();
+      pair.mappingMode = MappingMode::VirtualPad;
+      for(auto& input : inputs) {
+        if(input.type != InputNode::Type::Analog) continue;
+        if(input.mapping == pair.mappingLo) pair.directMappingLo = std::static_pointer_cast<InputAnalog>(input.directMapping);
+        if(input.mapping == pair.mappingHi) pair.directMappingHi = std::static_pointer_cast<InputAnalog>(input.directMapping);
+      }
+    }
   }
 
   auto hasDirectMappings() -> bool {
@@ -233,6 +328,7 @@ struct InputPort {
 
   string name;
   std::vector<InputDevice> devices;
+  string settingsKey;
 };
 
 struct VirtualPad : InputDevice {
@@ -299,6 +395,10 @@ struct VirtualPort {
 struct InputManager {
   auto create() -> void;
   auto bind() -> void;
+  auto acquired() -> bool;
+  auto acquire() -> bool;
+  auto release() -> bool;
+  auto synchronize() -> void;
   auto poll(bool force = false) -> void;
   auto eventInput(std::shared_ptr<HID::Device>, u32 groupID, u32 inputID, s16 oldValue, s16 newValue) -> void;
 

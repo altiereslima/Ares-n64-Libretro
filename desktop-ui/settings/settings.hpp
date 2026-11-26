@@ -10,6 +10,7 @@ struct Settings : Markup::Node {
   auto load() -> void;
   auto save() -> void;
   auto process(bool load) -> void;
+  static auto inputKey(string name, bool input = false) -> string;
 
   string filePath;
 
@@ -38,6 +39,7 @@ struct Settings : Markup::Node {
     bool colorBleed = false;
     bool colorEmulation = true;
     bool interframeBlending = true;
+    string deinterlacing = "Weave";
     bool overscan = true;
     bool pixelAccuracy = false;
   } video;
@@ -59,6 +61,8 @@ struct Settings : Markup::Node {
   struct Input {
     string driver;
     string defocus = "Pause";
+    string digitalToAnalog = "Immediate";
+    u32 digitalToAnalogTime = 500;
   } input;
 
   struct Boot {
@@ -119,6 +123,10 @@ struct Settings : Markup::Node {
     bool weaveDeinterlacing = true;
   } nintendo64;
 
+  struct PlayStation {
+    string expansionDevice = "None";
+  } playstation;
+
   struct GameBoyAdvance {
     bool player = false;
   } gameBoyAdvance;
@@ -130,6 +138,12 @@ struct Settings : Markup::Node {
   struct MegaDrive {
     bool tmss = false;
   } megadrive;
+
+  struct NeoGeo {
+    string aesBios = "neo-po.bin";
+    string mvsBios = "vs-bios.rom";
+    bool showAllGames = false;
+  } neoGeo;
 };
 
 struct VideoSettings : VerticalLayout {
@@ -161,6 +175,11 @@ struct VideoSettings : VerticalLayout {
     HorizontalLayout interframeBlendingLayout{this, Size{~0, 0}, 5};
       CheckLabel interframeBlendingOption{&interframeBlendingLayout, Size{0, 0}, 5};
       Label interframeBlendingHint{&interframeBlendingLayout, Size{~0, layoutVertSize}};
+    HorizontalLayout deinterlacingLayout{this, Size{~0, 0}, 5};
+      Label deinterlacingLabel{&deinterlacingLayout, Size{0, 0}};
+      ComboButton deinterlacingOption{&deinterlacingLayout, Size{130_sx, 0}};
+    HorizontalLayout deinterlacingNotesLayout{this, Size{~0, 0}, 5};
+      Label deinterlacingHint{&deinterlacingNotesLayout, Size{~0, layoutVertSize}};
     HorizontalLayout overscanLayout{this, Size{~0, 0}};
       CheckLabel overscanOption{&overscanLayout, Size{0, 0}, 5};
       Label overscanHint{&overscanLayout, Size{~0, layoutVertSize}};
@@ -215,6 +234,12 @@ struct AudioSettings : VerticalLayout {
 
 struct InputSettings : VerticalLayout {
   auto construct() -> void;
+  auto refreshTargets(bool selectCurrentGame = false) -> void;
+  auto selectedPorts() -> std::vector<InputPort>&;
+  auto editingGame() -> bool;
+  auto cancelAssignment() -> void;
+  auto resetGameMappings() -> void;
+  auto refreshDigitalToAnalog() -> void;
   auto systemChange() -> void;
   auto portChange() -> void;
   auto deviceChange() -> void;
@@ -234,6 +259,16 @@ struct InputSettings : VerticalLayout {
     RadioLabel inputDefocusBlock{&inputDefocusLayout, Size{0, 0}};
     RadioLabel inputDefocusAllow{&inputDefocusLayout, Size{0, 0}};
     Group inputDefocusGroup{&inputDefocusPause, &inputDefocusBlock, &inputDefocusAllow};
+  HorizontalLayout digitalToAnalogLayout{this, Size{~0, 0}};
+    Label digitalToAnalogLabel{&digitalToAnalogLayout, Size{0, 0}};
+    RadioLabel digitalToAnalogImmediate{&digitalToAnalogLayout, Size{0, 0}};
+    RadioLabel digitalToAnalogGradualReturn{&digitalToAnalogLayout, Size{0, 0}};
+    RadioLabel digitalToAnalogGradualHold{&digitalToAnalogLayout, Size{0, 0}};
+    Group digitalToAnalogGroup{&digitalToAnalogImmediate, &digitalToAnalogGradualReturn, &digitalToAnalogGradualHold};
+  HorizontalLayout digitalToAnalogTimeLayout{this, Size{~0, 0}};
+    Label digitalToAnalogTimeLabel{&digitalToAnalogTimeLayout, Size{0, 0}};
+    HorizontalSlider digitalToAnalogTimeSlider{&digitalToAnalogTimeLayout, Size{~0, 0}};
+    Label digitalToAnalogTimeValue{&digitalToAnalogTimeLayout, Size{60, 0}};
   HorizontalLayout indexLayout{this, Size{~0, 0}};
     ComboButton systemList{&indexLayout, Size{~0, 0}};
     ComboButton portList{&indexLayout, Size{~0, 0}};
@@ -243,9 +278,11 @@ struct InputSettings : VerticalLayout {
   HorizontalLayout controlLayout{this, Size{~0, 0}};
     Label assignLabel{&controlLayout, Size{~0, 0}};
     Canvas spacer{&controlLayout, Size{1, 0}};
+    Button resetGameButton{&controlLayout, Size{0, 0}};
     Button assignButton{&controlLayout, Size{80, 0}};
-    Button clearButton{&controlLayout, Size{80, 0}};
+    Button clearButton{&controlLayout, Size{0, 0}};
 
+  bool updatingTargets = false;
   maybe<InputNode&> activeMapping;
   u32 activeBinding = 0;
   Timer timer;
@@ -371,45 +408,71 @@ struct CoreSettings : VerticalLayout {
   auto construct() -> void;
 
   HorizontalLayout settingsLayout{this, Size{~0, 0}};
-      Label settingsHint{&settingsLayout, Size{0, layoutVertSize}};
-  //
-  Label nintendo64SettingsLabel{this, Size{~0, 0}, 5};
-    HorizontalLayout nintendo64ExpansionPakLayout{this, Size{~0, 0}, 5};
-      CheckLabel nintendo64ExpansionPakOption{&nintendo64ExpansionPakLayout, Size{0, 0}, 5};
-      Label nintendo64ExpansionPakHint{&nintendo64ExpansionPakLayout, Size{0, layoutVertSize}};
-    HorizontalLayout nintendo64ControllerPakBankLayout{this, Size{~0, 0}, 5};
-      Label nintendo64ControllerPakBankLabel{&nintendo64ControllerPakBankLayout, Size{0, layoutVertSize}};
-      ComboButton nintendo64ControllerPakBankOption{&nintendo64ControllerPakBankLayout, Size{0, 0}};
-      Label nintendo64ControllerPakBankHint{&nintendo64ControllerPakBankLayout, Size{0, layoutVertSize}};
-    HorizontalLayout disableVideoInterfaceProcessingLayout{this, Size{~0, 0}, 5};
-      CheckLabel disableVideoInterfaceProcessingOption{&disableVideoInterfaceProcessingLayout, Size{0, 0}, 5};
-      Label disableVideoInterfaceProcessingHint{&disableVideoInterfaceProcessingLayout, Size{0, layoutVertSize}};
-    HorizontalLayout weaveDeinterlacingLayout{this, Size{~0, 0}, 5};
-      CheckLabel weaveDeinterlacingOption{&weaveDeinterlacingLayout, Size{0, 0}, 5};
-      Label weaveDeinterlacingHint{&weaveDeinterlacingLayout, Size{0, layoutVertSize}};
-    HorizontalLayout renderQualityLayout{this, Size{~0, 0}, 5};
-      RadioLabel renderQuality1x{&renderQualityLayout, Size{0, 0}};
-      RadioLabel renderQuality2x{&renderQualityLayout, Size{0, 0}};
-      RadioLabel renderQuality4x{&renderQualityLayout, Size{0, 0}};
-      Group renderQualityGroup{&renderQuality1x, &renderQuality2x, &renderQuality4x};
-    HorizontalLayout renderSupersamplingLayout{this, Size{~0, 0}, 5};
-      CheckLabel renderSupersamplingOption{&renderSupersamplingLayout, Size{0, 0}, 5};
-      Label renderSupersamplingHint{&renderSupersamplingLayout, Size{0, layoutVertSize}};
+    Label settingsHint{&settingsLayout, Size{0, layoutVertSize}};
+  TabFrame coreTabs{this, Size{~0, ~0}};
+  TabFrameItem gameBoyAdvanceTab{&coreTabs};
+    VerticalLayout gameBoyAdvancePanel{&gameBoyAdvanceTab};
+  TabFrameItem megaDriveTab{&coreTabs};
+    VerticalLayout megaDrivePanel{&megaDriveTab};
+  TabFrameItem neoGeoTab{&coreTabs};
+    VerticalLayout neoGeoPanel{&neoGeoTab};
+  TabFrameItem nintendo64Tab{&coreTabs};
+    VerticalLayout nintendo64Panel{&nintendo64Tab};
+  TabFrameItem playstationTab{&coreTabs};
+    VerticalLayout playstationPanel{&playstationTab};
+  TabFrameItem superFamicomTab{&coreTabs};
+    VerticalLayout superFamicomPanel{&superFamicomTab};
 
-  Label gameBoyAdvanceSettingsLabel{this, Size{~0, 0}, 5};
-    HorizontalLayout gameBoyPlayerLayout{this, Size{~0, 0}, 5};
-      CheckLabel gameBoyPlayerOption{&gameBoyPlayerLayout, Size{0, 0}, 5};
-      Label gameBoyPlayerHint{&gameBoyPlayerLayout, Size{0, layoutVertSize}};
+  HorizontalLayout nintendo64ExpansionPakLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    CheckLabel nintendo64ExpansionPakOption{&nintendo64ExpansionPakLayout, Size{0, 0}, 5};
+    Label nintendo64ExpansionPakHint{&nintendo64ExpansionPakLayout, Size{0, layoutVertSize}};
+  HorizontalLayout nintendo64ControllerPakBankLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    Label nintendo64ControllerPakBankLabel{&nintendo64ControllerPakBankLayout, Size{0, layoutVertSize}};
+    ComboButton nintendo64ControllerPakBankOption{&nintendo64ControllerPakBankLayout, Size{0, 0}};
+    Label nintendo64ControllerPakBankHint{&nintendo64ControllerPakBankLayout, Size{0, layoutVertSize}};
+  HorizontalLayout disableVideoInterfaceProcessingLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    CheckLabel disableVideoInterfaceProcessingOption{&disableVideoInterfaceProcessingLayout, Size{0, 0}, 5};
+    Label disableVideoInterfaceProcessingHint{&disableVideoInterfaceProcessingLayout, Size{0, layoutVertSize}};
+  HorizontalLayout weaveDeinterlacingLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    CheckLabel weaveDeinterlacingOption{&weaveDeinterlacingLayout, Size{0, 0}, 5};
+    Label weaveDeinterlacingHint{&weaveDeinterlacingLayout, Size{0, layoutVertSize}};
+  HorizontalLayout renderQualityLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    RadioLabel renderQuality1x{&renderQualityLayout, Size{0, 0}};
+    RadioLabel renderQuality2x{&renderQualityLayout, Size{0, 0}};
+    RadioLabel renderQuality4x{&renderQualityLayout, Size{0, 0}};
+    Group renderQualityGroup{&renderQuality1x, &renderQuality2x, &renderQuality4x};
+  HorizontalLayout renderSupersamplingLayout{&nintendo64Panel, Size{~0, 0}, 5};
+    CheckLabel renderSupersamplingOption{&renderSupersamplingLayout, Size{0, 0}, 5};
+    Label renderSupersamplingHint{&renderSupersamplingLayout, Size{0, layoutVertSize}};
 
-  Label superFamicomSettingsLabel{this, Size{~0, 0}, 5};
-    HorizontalLayout superFamicomDeepBlackBoostLayout{this, Size{~0, 0}, 5};
-      CheckLabel superFamicomDeepBlackBoostOption{&superFamicomDeepBlackBoostLayout, Size{0, 0}, 5};
-      Label superFamicomDeepBlackBoostHint{&superFamicomDeepBlackBoostLayout, Size{0, layoutVertSize}};
+  HorizontalLayout playstationExpansionLayout{&playstationPanel, Size{~0, 0}, 5};
+    Label playstationExpansionLabel{&playstationExpansionLayout, Size{0, layoutVertSize}};
+    ComboButton playstationExpansionOption{&playstationExpansionLayout, Size{0, 0}, 5};
+    Label playstationFirmwareHint{&playstationExpansionLayout, Size{0, layoutVertSize}};
+    VerticalLayout playstationExpansionNotesLayout{&playstationPanel, Size{~0, 0}, 5};
+    Label playstationEEPROMHint{&playstationExpansionNotesLayout, Size{~0, 0}};
+    Label playstationCompatibilityHint{&playstationExpansionNotesLayout, Size{~0, 0}};
 
-  Label megaDriveSettingsLabel{this, Size{~0, 0}, 5};
-    HorizontalLayout megaDriveTmssLayout{this, Size{~0, 0}, 5};
-      CheckLabel megaDriveTmssOption{&megaDriveTmssLayout, Size{0, 0}, 5};
-      Label megaDriveTmssHint{&megaDriveTmssLayout, Size{0, layoutVertSize}};
+  HorizontalLayout gameBoyPlayerLayout{&gameBoyAdvancePanel, Size{~0, 0}, 5};
+    CheckLabel gameBoyPlayerOption{&gameBoyPlayerLayout, Size{0, 0}, 5};
+    Label gameBoyPlayerHint{&gameBoyPlayerLayout, Size{0, layoutVertSize}};
+
+  HorizontalLayout superFamicomDeepBlackBoostLayout{&superFamicomPanel, Size{~0, 0}, 5};
+    CheckLabel superFamicomDeepBlackBoostOption{&superFamicomDeepBlackBoostLayout, Size{0, 0}, 5};
+    Label superFamicomDeepBlackBoostHint{&superFamicomDeepBlackBoostLayout, Size{0, layoutVertSize}};
+
+  HorizontalLayout megaDriveTmssLayout{&megaDrivePanel, Size{~0, 0}, 5};
+    CheckLabel megaDriveTmssOption{&megaDriveTmssLayout, Size{0, 0}, 5};
+    Label megaDriveTmssHint{&megaDriveTmssLayout, Size{0, layoutVertSize}};
+
+  HorizontalLayout neoGeoAesBiosLayout{&neoGeoPanel, Size{~0, 0}, 5};
+    Label neoGeoAesBiosLabel{&neoGeoAesBiosLayout, Size{0, layoutVertSize}};
+    ComboButton neoGeoAesBiosOption{&neoGeoAesBiosLayout, Size{260_sx, 0}};
+  HorizontalLayout neoGeoMvsBiosLayout{&neoGeoPanel, Size{~0, 0}, 5};
+    Label neoGeoMvsBiosLabel{&neoGeoMvsBiosLayout, Size{0, layoutVertSize}};
+    ComboButton neoGeoMvsBiosOption{&neoGeoMvsBiosLayout, Size{260_sx, 0}};
+  HorizontalLayout neoGeoShowAllGamesLayout{&neoGeoPanel, Size{~0, 0}, 5};
+    CheckLabel neoGeoShowAllGamesOption{&neoGeoShowAllGamesLayout, Size{0, 0}, 5};
 };
 
 struct DeveloperSettings : VerticalLayout {

@@ -18,52 +18,112 @@ auto Peripheral::unload() -> void {
   node.reset();
 }
 
+auto Peripheral::baudrateReload() const -> u32 {
+  static const u8 factors[4] = {1, 1, 16, 64};
+  u32 cyclesPerBit = io.baudrateReloadValue * factors[io.baudrateReloadFactor] & ~1u;
+  return max(1u, cyclesPerBit >> 1);
+}
+
+auto Peripheral::stepBaudrateTimer(u32 clocks) -> u32 {
+  u32 reload = baudrateReload();
+  if(clocks < io.baudrateTimer) {
+    io.baudrateTimer -= clocks;
+    return 0;
+  }
+  u32 past = clocks - io.baudrateTimer;
+  io.baudrateTimer = (reload - past % reload) & 0x1f'ffff;
+  return 1 + past / reload;
+}
+
+auto Peripheral::pollInterrupt() -> void {
+  bool request = io.transmitInterruptEnable && (io.transmitStarted || io.transmitFinished);
+  request |= io.receiveInterruptEnable && io.receiveSize >= (1u << io.receiveInterruptMode);
+  request |= io.acknowledgeInterruptEnable && io.acknowledgeAsserted;
+  if(request) io.interruptRequest = 1;
+  interrupt.drive(Interrupt::Peripheral, io.interruptRequest);
+}
+
 auto Peripheral::step(u32 clocks) -> void {
+  for(auto* port : {&controllerPort1, &controllerPort2}) {
+    if(port->device && port->device->timer && *port->device->timer) port->device->step(clocks);
+  }
   while(clocks > 0) {
-    int nextTransfer = (io.transferCounter > 0) ? io.transferCounter : (i32)INT32_MAX;
-    int nextAck      = (io.transferCounter <= 0 && io.ackCounter > 0) ? io.ackCounter : (i32)INT32_MAX;
+    auto pending = [&](i32 counter, bool active) {
+      return active && counter > 0 ? counter : (i32)INT32_MAX;
+    };
+    i32 next = min((i32)clocks,
+      pending((i32)io.baudrateTimer, io.transferElapses > 0),
+      pending(io.ackDelayCounter, io.transferElapses == 0),
+      pending(io.ackAssertCounter, true));
+    u32 stepClocks = (u32)next;
 
-    u32 stepClocks = static_cast<u32>(std::min<int>(clocks, std::min(nextTransfer, nextAck)));
+    u32 elapses = stepBaudrateTimer(stepClocks);
 
-    if(io.transferCounter > 0) {
-      if(stepClocks >= static_cast<u32>(io.transferCounter)) {
-        stepClocks = static_cast<u32>(io.transferCounter);
-        io.transferCounter = 0;
-        io.receiveSize = 1;
-      } else {
-        io.transferCounter -= static_cast<int>(stepClocks);
+    if(io.ackAssertCounter > 0) {
+      io.ackAssertCounter -= (i32)stepClocks;
+      if(io.ackAssertCounter <= 0) {
+        io.ackAssertCounter = 0;
+        io.acknowledgeAsserted = 0;
       }
     }
 
-    if(io.transferCounter <= 0 && io.ackCounter > 0) {
-      if(stepClocks >= static_cast<u32>(io.ackCounter)) {
-        stepClocks = static_cast<u32>(io.ackCounter);
-        io.ackCounter = 0;
-
-        if(!io.acknowledgeAsserted) {
-          io.interruptRequest = 1;
-          io.acknowledgeAsserted = 1;
-          if(io.acknowledgeInterruptEnable) interrupt.raise(Interrupt::Peripheral);
-          io.ackCounter = 96; // ACK duration
-        } else {
-          io.acknowledgeAsserted = 0;
+    if(io.transferElapses > 0) {
+      if(elapses && !io.transmitPending) io.transmitStarted = 1;
+      io.transferElapses -= min(io.transferElapses, elapses);
+      if(io.transferElapses == 0 && (io.joyOutput || io.receiveEnable)) {
+        u32 index = min<u32>(io.receiveSize, 7);
+        for(u32 byte = index; byte < 8; byte++) {
+          io.receiveData.byte(byte) = io.receiveShift;
         }
-      } else {
-        io.ackCounter -= static_cast<int>(stepClocks);
+        io.receiveSize = min<u32>(io.receiveSize + 1, 8);
+        io.receiveEnable = 0;
+      }
+      if(io.transferElapses == 0) {
+        io.transmitFinished = 1;
+        startTransfer();
+        if(io.transferElapses) io.transmitStarted = 1;
+      }
+    } else if(io.ackDelayCounter > 0) {
+      io.ackDelayCounter -= (i32)stepClocks;
+      if(io.ackDelayCounter <= 0) {
+        io.ackDelayCounter = 0;
+        io.acknowledgeAsserted = 1;
+        io.ackAssertCounter = ackPulseWidth;
       }
     }
+
+    pollInterrupt();
 
     clocks -= stepClocks;
   }
 }
 
+auto Peripheral::nextEvent() const -> u32 {
+  u32 next = ~0u;
+  if(io.transferElapses) {
+    next = io.baudrateTimer;
+  } else if(io.ackDelayCounter > 0) {
+    next = (u32)io.ackDelayCounter;
+  }
+  if(io.ackAssertCounter > 0) next = min(next, (u32)io.ackAssertCounter);
+  for(auto* port : {&controllerPort1, &controllerPort2}) {
+    if(port->device && port->device->timer && *port->device->timer) {
+      if(u32 clocks = port->device->nextEvent()) next = min(next, clocks);
+    }
+  }
+  return next == ~0u ? 0 : max(1u, next);
+}
+
 auto Peripheral::power(bool reset) -> void {
+  controllerPort1.power(reset);
+  controllerPort2.power(reset);
+  memoryCardPort1.power(reset);
+  memoryCardPort2.power(reset);
   io = {};
   io.transmitStarted = 1;
   io.transmitFinished = 1;
   io.acknowledgeAsserted = 0;
-  io.baudrateReloadFactor = 1;
-  io.baudrateReloadValue = 0x88;
+  io.baudrateTimer = baudrateReload();
 }
 
 }
